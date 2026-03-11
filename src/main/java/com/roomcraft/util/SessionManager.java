@@ -1,20 +1,28 @@
 package com.roomcraft.util;
 
-/**
- * Session Manager - global state holder for the running app
- * Static fields:
- *   currentUser   (User)    - the logged-in user, null if not logged in
- *   currentRoom   (RoomConfig) - the room being designed
- *   currentDesign (Design)  - the design being edited, null if new
- *   filterUserId  (int)     - admin filter: show designs for this user (-1 = all)
- *
- * Methods:
- *   clear()     - reset all fields to null / -1
- *   isLoggedIn() -> boolean
- *   isAdmin()    -> boolean
- *
- * Assigned to: Member 2
- */
+import com.roomcraft.model.Design;
+import com.roomcraft.model.RoomConfig;
+import com.roomcraft.model.User;
+
 public class SessionManager {
-    // TODO: implement static fields and methods
+
+    public static User currentUser = null;
+    public static RoomConfig currentRoom = null;
+    public static Design currentDesign = null; // null = new design
+    public static int filterUserId = -1;       // for admin filtering
+
+    public static void clear() {
+        currentUser = null;
+        currentRoom = null;
+        currentDesign = null;
+        filterUserId = -1;
+    }
+
+    public static boolean isLoggedIn() {
+        return currentUser != null;
+    }
+
+    public static boolean isAdmin() {
+        return currentUser != null && "admin".equals(currentUser.role);
+    }
 }
