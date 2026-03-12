@@ -8,5 +8,12 @@ import javax.swing.JFrame;
  * Member: [Your Name]
  */
 public class AppFrame extends JFrame {
+    public void showPanel(String adminDashboard) {
+
+    }
+
+    public void showPanel(String adminDashboard) {
+
+    }
     // TODO: implement
 }
