@@ -1,0 +1,581 @@
+import React, { useEffect, useRef, useState, useCallback } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { projectsApi, furnitureApi, FURNITURE_LIBRARY } from '../store/authStore'
+import toast from 'react-hot-toast'
+import {
+  Save, Undo, RotateCw, Trash2, Box, Layers,
+  Grid, ZoomIn, ZoomOut, MousePointer,
+  ChevronLeft, DoorOpen, PanelLeft, RefreshCw
+} from 'lucide-react'
+
+// ── Constants ─────────────────────────────────────────────────
+const GRID_PX = 40   // pixels per meter
+const SNAP    = 10   // snap every 0.25m
+
+const COLORS = {
+  Seating:'#93b4fd', Tables:'#6ee7b7', Bedroom:'#fca5a5',
+  Storage:'#d8b4fe', Office:'#fcd34d', Lighting:'#fdba74',
+  Bathroom:'#a5f3fc', Kitchen:'#bbf7d0', 'Living Room':'#bfdbfe', Decor:'#f9a8d4',
+}
+const CAT_EMOJI = {
+  Seating:'🪑', Tables:'🪵', Bedroom:'🛏️', Storage:'🗄️', Office:'💼',
+  Lighting:'💡', Bathroom:'🚿', Kitchen:'🍳', 'Living Room':'🛋️', Decor:'🪴',
+}
+const FLOOR_COLORS = { wood:'#d4a574', carpet:'#9b8fa8', tile:'#e0e0e0', marble:'#f0f0f0', concrete:'#b0b0b0' }
+
+const snap = v => Math.round(v / SNAP) * SNAP
+const OX = 80, OY = 80  // room origin on canvas
+
+// ── Room polygon (pixels) ─────────────────────────────────────
+function roomPoly(cfg) {
+  const W = (cfg.width  || 5) * GRID_PX
+  const D = (cfg.depth  || 4) * GRID_PX
+  if (cfg.shape === 'l-shape') {
+    const hw = Math.round(W * 0.6), hd = Math.round(D * 0.55)
+    return [[OX,OY],[OX+W,OY],[OX+W,OY+hd],[OX+hw,OY+hd],[OX+hw,OY+D],[OX,OY+D]]
+  }
+  if (cfg.shape === 'square') {
+    const S = Math.min(W,D)
+    return [[OX,OY],[OX+S,OY],[OX+S,OY+S],[OX,OY+S]]
+  }
+  return [[OX,OY],[OX+W,OY],[OX+W,OY+D],[OX,OY+D]]
+}
+
+// ── Canvas draw ───────────────────────────────────────────────
+function drawAll(canvas, cfg, items, doors, selectedId, zoom) {
+  const ctx = canvas.getContext('2d')
+  const CW = canvas.width, CH = canvas.height
+  ctx.clearRect(0, 0, CW, CH)
+  ctx.save()
+  ctx.scale(zoom, zoom)
+
+  // Grid
+  ctx.strokeStyle = 'rgba(59,110,246,0.08)'
+  ctx.lineWidth = 1
+  for (let x = 0; x < CW/zoom; x += GRID_PX) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,CH/zoom); ctx.stroke() }
+  for (let y = 0; y < CH/zoom; y += GRID_PX) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(CW/zoom,y); ctx.stroke() }
+  ctx.strokeStyle = 'rgba(59,110,246,0.18)'
+  for (let x = 0; x < CW/zoom; x += GRID_PX*5) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,CH/zoom); ctx.stroke() }
+  for (let y = 0; y < CH/zoom; y += GRID_PX*5) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(CH/zoom,y); ctx.stroke() }
+
+  // Room fill
+  const poly = roomPoly(cfg)
+  ctx.beginPath()
+  poly.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y))
+  ctx.closePath()
+
+  // Floor color
+  ctx.fillStyle = FLOOR_COLORS[cfg.floorTexture] || '#e8dcc8'
+  ctx.globalAlpha = 0.55
+  ctx.fill()
+  ctx.globalAlpha = 1
+
+  // Wall outline
+  ctx.beginPath()
+  poly.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y))
+  ctx.closePath()
+  ctx.strokeStyle = '#1e293b'
+  ctx.lineWidth = 5
+  ctx.stroke()
+
+  // Wall color tint
+  ctx.beginPath()
+  poly.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y))
+  ctx.closePath()
+  ctx.fillStyle = cfg.wallColor || '#F5F5F0'
+  ctx.globalAlpha = 0.15
+  ctx.fill()
+  ctx.globalAlpha = 1
+
+  // Dimensions
+  ctx.fillStyle = '#64748b'
+  ctx.font = `bold 12px DM Sans,sans-serif`
+  ctx.textAlign = 'center'
+  const W = (cfg.width||5)*GRID_PX, D = (cfg.depth||4)*GRID_PX
+  ctx.fillText(`${cfg.width||5} m`, OX + W/2, OY - 12)
+  ctx.save()
+  ctx.translate(OX - 18, OY + D/2)
+  ctx.rotate(-Math.PI/2)
+  ctx.fillText(`${cfg.depth||4} m`, 0, 0)
+  ctx.restore()
+
+  // Doors
+  doors.forEach(d => {
+    ctx.save()
+    ctx.translate(d.x, d.y)
+    ctx.rotate((d.rotation||0) * Math.PI/180)
+    ctx.fillStyle = '#fff'
+    ctx.strokeStyle = '#475569'
+    ctx.lineWidth = 2
+    ctx.fillRect(0, -4, 44, 8)
+    ctx.strokeRect(0, -4, 44, 8)
+    ctx.beginPath()
+    ctx.arc(0, 0, 40, 0, Math.PI/2)
+    ctx.strokeStyle = 'rgba(71,85,105,0.35)'
+    ctx.lineWidth = 1
+    ctx.setLineDash([4,3])
+    ctx.stroke()
+    ctx.setLineDash([])
+    ctx.restore()
+  })
+
+  // Furniture
+  items.forEach(item => {
+    const sel = item.id === selectedId
+    ctx.save()
+    ctx.translate(item.x + item.w/2, item.y + item.d/2)
+    ctx.rotate((item.rotation||0) * Math.PI/180)
+
+    // Shadow
+    ctx.shadowColor = 'rgba(0,0,0,0.18)'
+    ctx.shadowBlur = sel ? 14 : 6
+    ctx.shadowOffsetX = 2
+    ctx.shadowOffsetY = 2
+
+    // Body
+    ctx.fillStyle = item.color || '#93b4fd'
+    ctx.beginPath()
+    ctx.roundRect(-item.w/2, -item.d/2, item.w, item.d, 5)
+    ctx.fill()
+
+    ctx.shadowColor = 'transparent'
+
+    // Border
+    ctx.strokeStyle = sel ? '#3b6ef6' : 'rgba(0,0,0,0.25)'
+    ctx.lineWidth = sel ? 2.5 : 1
+    ctx.beginPath()
+    ctx.roundRect(-item.w/2, -item.d/2, item.w, item.d, 5)
+    ctx.stroke()
+
+    // Label
+    const fontSize = Math.max(8, Math.min(13, Math.min(item.w, item.d) / 3.5))
+    ctx.fillStyle = 'rgba(15,23,42,0.8)'
+    ctx.font = `600 ${fontSize}px DM Sans,sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    const maxW = item.w - 8
+    let label = item.label || ''
+    while (ctx.measureText(label).width > maxW && label.length > 3) label = label.slice(0,-1)
+    if (label !== item.label) label += '…'
+    ctx.fillText(label, 0, 0)
+
+    // Selection handle
+    if (sel) {
+      ctx.fillStyle = '#3b6ef6'
+      ctx.beginPath()
+      ctx.arc(0, -item.d/2 - 10, 5, 0, Math.PI*2)
+      ctx.fill()
+    }
+    ctx.restore()
+  })
+
+  ctx.restore()
+}
+
+// ── Main component ────────────────────────────────────────────
+export default function Workspace2D() {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const canvasRef = useRef(null)
+
+  const [project,    setProject]    = useState(null)
+  const [cfg,        setCfg]        = useState({ shape:'rectangle', width:5, depth:4, height:2.8, wallColor:'#F5F5F0', floorTexture:'wood' })
+  const [items,      setItems]      = useState([])
+  const [doors,      setDoors]      = useState([])
+  const [selected,   setSelected]   = useState(null)
+  const [zoom,       setZoom]       = useState(1)
+  const [panelOpen,  setPanelOpen]  = useState(true)
+  const [library,    setLibrary]    = useState(FURNITURE_LIBRARY)
+  const [furSearch,  setFurSearch]  = useState('')
+  const [furCat,     setFurCat]     = useState('All')
+  const [saving,     setSaving]     = useState(false)
+  const [dirty,      setDirty]      = useState(false)
+
+  const drag    = useRef(null)
+  const history = useRef([])
+
+  // ── Load ──────────────────────────────────────────────────
+  useEffect(() => {
+    projectsApi.getById(id).then(p => {
+      setProject(p)
+      try { setCfg(JSON.parse(p.roomConfig)) } catch {}
+      try { const it = JSON.parse(p.furnitureLayout); setItems(Array.isArray(it) ? it : []) } catch {}
+    }).catch(() => toast.error('Project not found — creating new view'))
+
+    furnitureApi.getAll().then(data => setLibrary(data)).catch(() => {})
+  }, [id])
+
+  // ── Redraw ────────────────────────────────────────────────
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    drawAll(canvas, cfg, items, doors, selected, zoom)
+  }, [cfg, items, doors, selected, zoom])
+
+  // ── Resize canvas ─────────────────────────────────────────
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const parent = canvas.parentElement
+    const resize = () => {
+      canvas.width  = parent.clientWidth
+      canvas.height = parent.clientHeight
+      drawAll(canvas, cfg, items, doors, selected, zoom)
+    }
+    resize()
+    const ro = new ResizeObserver(resize)
+    ro.observe(parent)
+    return () => ro.disconnect()
+  }, []) // eslint-disable-line
+
+  // ── Canvas coord helper ───────────────────────────────────
+  const toCanvas = e => {
+    const rect = canvasRef.current.getBoundingClientRect()
+    return { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom }
+  }
+
+  // ── Mouse events ─────────────────────────────────────────
+  const onMouseDown = e => {
+    const { x, y } = toCanvas(e)
+    const hit = [...items].reverse().find(item => {
+      const hw = item.w/2, hd = item.d/2
+      const cx = item.x + hw, cy = item.y + hd
+      const dx = x - cx, dy = y - cy
+      const rad = -(item.rotation||0) * Math.PI/180
+      const rx = dx*Math.cos(rad) - dy*Math.sin(rad)
+      const ry = dx*Math.sin(rad) + dy*Math.cos(rad)
+      return Math.abs(rx) <= hw && Math.abs(ry) <= hd
+    })
+    if (hit) {
+      setSelected(hit.id)
+      drag.current = { id: hit.id, ox: x - hit.x, oy: y - hit.y }
+    } else {
+      setSelected(null)
+      drag.current = null
+    }
+  }
+
+  const onMouseMove = e => {
+    if (!drag.current) return
+    const { x, y } = toCanvas(e)
+    setItems(prev => prev.map(item =>
+      item.id === drag.current.id
+        ? { ...item, x: snap(x - drag.current.ox), y: snap(y - drag.current.oy) }
+        : item
+    ))
+    setDirty(true)
+  }
+
+  const onMouseUp = () => { drag.current = null }
+
+  // ── Drop from library ────────────────────────────────────
+  const onDrop = e => {
+    e.preventDefault()
+    const raw = e.dataTransfer.getData('furniture')
+    if (!raw) return
+    const model = JSON.parse(raw)
+    const { x, y } = toCanvas(e)
+    const w = model.width  * GRID_PX
+    const d = model.depth  * GRID_PX
+    pushHistory()
+    const newItem = {
+      id: Date.now(),
+      label: model.name,
+      category: model.category,
+      color: COLORS[model.category] || '#93b4fd',
+      x: snap(x - w/2),
+      y: snap(y - d/2),
+      w, d,
+      rotation: 0,
+    }
+    setItems(prev => [...prev, newItem])
+    setSelected(newItem.id)
+    setDirty(true)
+  }
+
+  // ── Actions ───────────────────────────────────────────────
+  const pushHistory = () => {
+    history.current.push(JSON.stringify(items))
+    if (history.current.length > 40) history.current.shift()
+  }
+
+  const undo = () => {
+    if (!history.current.length) { toast('Nothing to undo'); return }
+    setItems(JSON.parse(history.current.pop()))
+    setSelected(null)
+    setDirty(true)
+  }
+
+  const rotate = () => {
+    if (!selected) return
+    pushHistory()
+    setItems(prev => prev.map(item =>
+      item.id === selected ? { ...item, rotation: ((item.rotation||0) + 90) % 360 } : item
+    ))
+    setDirty(true)
+  }
+
+  const del = () => {
+    if (!selected) return
+    pushHistory()
+    setItems(prev => prev.filter(i => i.id !== selected))
+    setSelected(null)
+    setDirty(true)
+  }
+
+  const addDoor = () => {
+    setDoors(prev => [...prev, { id: Date.now(), x: OX + 20, y: OY, rotation: 0 }])
+    toast('Door added — drag to position it on a wall')
+  }
+
+  const resetRoom = () => {
+    pushHistory()
+    setItems([])
+    setSelected(null)
+    setDirty(true)
+    toast('Room cleared')
+  }
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await projectsApi.update(id, {
+        roomConfig: JSON.stringify(cfg),
+        furnitureLayout: JSON.stringify(items),
+      })
+      setDirty(false)
+      toast.success('Saved!')
+    } catch {
+      toast.error('Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // ── Keyboard shortcuts ────────────────────────────────────
+  useEffect(() => {
+    const handler = e => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
+      if (e.key === 'Delete' || e.key === 'Backspace') del()
+      if (e.key === 'r' || e.key === 'R') rotate()
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo() }
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save() }
+      if (e.key === 'Escape') setSelected(null)
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [selected, items]) // eslint-disable-line
+
+  const categories = ['All', ...new Set(library.map(f => f.category))]
+  const filteredLib = library.filter(f => {
+    const mc = furCat === 'All' || f.category === furCat
+    const ms = f.name.toLowerCase().includes(furSearch.toLowerCase())
+    return mc && ms
+  })
+  const selectedItem = items.find(i => i.id === selected)
+
+  return (
+    <div className="h-screen flex flex-col bg-surface-100 overflow-hidden select-none">
+
+      {/* ── Toolbar ── */}
+      <div className="h-14 bg-white border-b border-surface-200 flex items-center px-3 gap-2 flex-shrink-0 z-20 overflow-x-auto">
+        <button onClick={() => navigate('/projects')} className="btn-ghost text-sm py-1.5 flex-shrink-0">
+          <ChevronLeft className="w-4 h-4" />
+          <span className="hidden sm:inline">Projects</span>
+        </button>
+        <div className="h-6 w-px bg-surface-200 flex-shrink-0" />
+
+        <span className="font-semibold text-surface-900 text-sm truncate max-w-[120px] flex-shrink-0">
+          {project?.name || 'Loading…'}
+        </span>
+        <span className="badge badge-blue text-xs flex-shrink-0">2D</span>
+        {dirty && <span className="text-xs text-amber-500 flex-shrink-0">● Unsaved</span>}
+
+        <div className="flex-1" />
+
+        {/* Zoom */}
+        <button onClick={() => setZoom(z => Math.max(0.4, +(z-0.15).toFixed(2)))}
+          className="p-1.5 rounded-lg text-surface-500 hover:bg-surface-100 flex-shrink-0"><ZoomOut className="w-4 h-4" /></button>
+        <span className="text-xs text-surface-500 w-10 text-center font-mono flex-shrink-0">{Math.round(zoom*100)}%</span>
+        <button onClick={() => setZoom(z => Math.min(2.5, +(z+0.15).toFixed(2)))}
+          className="p-1.5 rounded-lg text-surface-500 hover:bg-surface-100 flex-shrink-0"><ZoomIn className="w-4 h-4" /></button>
+
+        <div className="h-6 w-px bg-surface-200 flex-shrink-0" />
+
+        {/* Item actions */}
+        <button onClick={rotate} disabled={!selected} title="Rotate (R)"
+          className="p-1.5 rounded-lg text-surface-500 hover:bg-surface-100 disabled:opacity-30 flex-shrink-0">
+          <RotateCw className="w-4 h-4" /></button>
+        <button onClick={del} disabled={!selected} title="Delete (Del)"
+          className="p-1.5 rounded-lg text-red-400 hover:bg-red-50 disabled:opacity-30 flex-shrink-0">
+          <Trash2 className="w-4 h-4" /></button>
+        <button onClick={undo} title="Undo (Ctrl+Z)"
+          className="p-1.5 rounded-lg text-surface-500 hover:bg-surface-100 flex-shrink-0">
+          <Undo className="w-4 h-4" /></button>
+        <button onClick={addDoor} title="Add Door"
+          className="p-1.5 rounded-lg text-surface-500 hover:bg-surface-100 flex-shrink-0">
+          <DoorOpen className="w-4 h-4" /></button>
+        <button onClick={resetRoom} title="Clear Room"
+          className="p-1.5 rounded-lg text-surface-500 hover:bg-surface-100 flex-shrink-0">
+          <RefreshCw className="w-4 h-4" /></button>
+
+        <div className="h-6 w-px bg-surface-200 flex-shrink-0" />
+
+        <button onClick={() => { save(); setTimeout(() => navigate(`/workspace/3d/${id}`), 500) }}
+          className="btn-secondary text-sm py-1.5 flex-shrink-0">
+          <Box className="w-4 h-4" /><span className="hidden sm:inline">3D View</span>
+        </button>
+        <button onClick={save} disabled={saving} className="btn-primary text-sm py-1.5 flex-shrink-0">
+          {saving
+            ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            : <Save className="w-4 h-4" />}
+          <span className="hidden sm:inline">Save</span>
+        </button>
+      </div>
+
+      <div className="flex flex-1 overflow-hidden relative">
+
+        {/* ── Furniture panel ── */}
+        <div className={`bg-white border-r border-surface-200 flex flex-col transition-all duration-300 flex-shrink-0 ${panelOpen ? 'w-56' : 'w-0 overflow-hidden'}`}>
+          <div className="p-3 border-b border-surface-100 flex-shrink-0">
+            <p className="font-semibold text-surface-800 text-sm mb-2">Furniture</p>
+            <input className="input-field text-xs py-1.5" placeholder="Search…"
+              value={furSearch} onChange={e => setFurSearch(e.target.value)} />
+          </div>
+          <div className="flex gap-1 p-2 flex-wrap border-b border-surface-100 flex-shrink-0 max-h-24 overflow-y-auto">
+            {categories.map(c => (
+              <button key={c} onClick={() => setFurCat(c)}
+                className={`text-xs px-2 py-0.5 rounded-lg border transition-all ${furCat===c ? 'bg-brand-600 text-white border-brand-600' : 'border-surface-200 text-surface-600 hover:border-brand-300'}`}>
+                {c}
+              </button>
+            ))}
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+            {filteredLib.map(f => (
+              <div key={f.id}
+                draggable
+                onDragStart={e => e.dataTransfer.setData('furniture', JSON.stringify(f))}
+                className="flex items-center gap-2 p-2 rounded-lg hover:bg-surface-50 cursor-grab active:cursor-grabbing border border-transparent hover:border-surface-200 transition-all">
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center text-sm flex-shrink-0"
+                  style={{ background: (COLORS[f.category] || '#93b4fd') + '40' }}>
+                  {CAT_EMOJI[f.category] || '📦'}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-surface-800 truncate">{f.name}</p>
+                  <p className="text-xs text-surface-400">{f.width}×{f.depth}m</p>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="p-2 border-t border-surface-100 text-xs text-surface-400 text-center flex-shrink-0">
+            Drag items onto the canvas
+          </div>
+        </div>
+
+        {/* Panel toggle */}
+        <button onClick={() => setPanelOpen(!panelOpen)}
+          className="absolute z-30 top-1/2 -translate-y-1/2 bg-white border border-surface-200 rounded-r-lg p-1 shadow-sm hover:bg-surface-50 transition-all"
+          style={{ left: panelOpen ? '224px' : '0px' }}>
+          <PanelLeft className={`w-4 h-4 text-surface-500 transition-transform ${panelOpen ? '' : 'rotate-180'}`} />
+        </button>
+
+        {/* ── Canvas ── */}
+        <div className="flex-1 relative overflow-hidden">
+          <canvas
+            ref={canvasRef}
+            className="w-full h-full"
+            style={{ cursor: drag.current ? 'grabbing' : selected ? 'move' : 'default' }}
+            onMouseDown={onMouseDown}
+            onMouseMove={onMouseMove}
+            onMouseUp={onMouseUp}
+            onMouseLeave={onMouseUp}
+            onDrop={onDrop}
+            onDragOver={e => e.preventDefault()}
+          />
+
+          {/* Zoom hint */}
+          <div className="absolute bottom-3 left-3 bg-white/90 border border-surface-200 rounded-lg px-3 py-1.5 text-xs text-surface-500 font-mono pointer-events-none">
+            {Math.round(zoom*100)}% · {cfg.width||5}×{cfg.depth||4}m · {items.length} item{items.length!==1?'s':''}
+          </div>
+
+          {/* Keyboard hints */}
+          <div className="absolute bottom-3 right-3 bg-white/90 border border-surface-200 rounded-lg px-3 py-1.5 text-xs text-surface-500 pointer-events-none hidden md:block">
+            R rotate · Del delete · Ctrl+Z undo · Ctrl+S save
+          </div>
+
+          {/* ── Room config panel ── */}
+          <div className="absolute top-3 right-3 bg-white rounded-xl border border-surface-200 shadow-md p-4 w-52">
+            <p className="text-xs font-semibold text-surface-700 mb-3 uppercase tracking-wide">Room Settings</p>
+            <div className="space-y-2.5">
+              <div>
+                <label className="text-xs text-surface-500 block mb-0.5">Shape</label>
+                <select className="w-full text-xs border border-surface-200 rounded-lg px-2 py-1.5 bg-surface-50"
+                  value={cfg.shape} onChange={e => { setCfg(c=>({...c,shape:e.target.value})); setDirty(true) }}>
+                  <option value="rectangle">Rectangle</option>
+                  <option value="square">Square</option>
+                  <option value="l-shape">L-Shape</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <div>
+                  <label className="text-xs text-surface-500 block mb-0.5">Width (m)</label>
+                  <input type="number" min="2" max="20" step="0.5"
+                    className="w-full text-xs border border-surface-200 rounded-lg px-2 py-1.5 bg-surface-50"
+                    value={cfg.width} onChange={e => { setCfg(c=>({...c,width:+e.target.value})); setDirty(true) }} />
+                </div>
+                <div>
+                  <label className="text-xs text-surface-500 block mb-0.5">Depth (m)</label>
+                  <input type="number" min="2" max="20" step="0.5"
+                    className="w-full text-xs border border-surface-200 rounded-lg px-2 py-1.5 bg-surface-50"
+                    value={cfg.depth} onChange={e => { setCfg(c=>({...c,depth:+e.target.value})); setDirty(true) }} />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-surface-500 block mb-0.5">Wall Color</label>
+                <div className="flex gap-1.5">
+                  <input type="color" className="w-8 h-8 rounded border border-surface-200 cursor-pointer p-0.5"
+                    value={cfg.wallColor||'#F5F5F0'} onChange={e => { setCfg(c=>({...c,wallColor:e.target.value})); setDirty(true) }} />
+                  <input className="flex-1 text-xs border border-surface-200 rounded-lg px-2 bg-surface-50"
+                    value={cfg.wallColor||'#F5F5F0'} onChange={e => { setCfg(c=>({...c,wallColor:e.target.value})); setDirty(true) }} />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-surface-500 block mb-0.5">Floor</label>
+                <select className="w-full text-xs border border-surface-200 rounded-lg px-2 py-1.5 bg-surface-50"
+                  value={cfg.floorTexture||'wood'} onChange={e => { setCfg(c=>({...c,floorTexture:e.target.value})); setDirty(true) }}>
+                  {['wood','carpet','tile','marble','concrete'].map(f => <option key={f} value={f}>{f}</option>)}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Selected item panel ── */}
+          {selectedItem && (
+            <div className="absolute top-3 left-3 bg-white rounded-xl border border-brand-200 shadow-md p-3 w-44 animate-fade-in"
+              style={{ left: panelOpen ? '235px' : '8px' }}>
+              <p className="text-xs font-semibold text-brand-700 mb-2 truncate">{selectedItem.label}</p>
+              <div className="space-y-1 text-xs text-surface-500 mb-3">
+                <div className="flex justify-between">
+                  <span>Size</span>
+                  <span className="font-mono">{(selectedItem.w/GRID_PX).toFixed(1)}×{(selectedItem.d/GRID_PX).toFixed(1)}m</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Rotation</span>
+                  <span className="font-mono">{selectedItem.rotation||0}°</span>
+                </div>
+              </div>
+              <div className="flex gap-1.5">
+                <button onClick={rotate} className="flex-1 flex items-center justify-center gap-1 text-xs bg-surface-100 hover:bg-surface-200 text-surface-700 py-1.5 rounded-lg">
+                  <RotateCw className="w-3 h-3" /> R
+                </button>
+                <button onClick={del} className="flex-1 flex items-center justify-center gap-1 text-xs bg-red-50 hover:bg-red-100 text-red-600 py-1.5 rounded-lg">
+                  <Trash2 className="w-3 h-3" /> Del
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
