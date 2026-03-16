@@ -32,7 +32,7 @@ const FLOOR_COL = {
 }
 const snapV = v => Math.round(v / SNAP) * SNAP
 
-/* ── OBJ top-down parser ── */
+
 function parseOBJTopDown(text) {
   const verts = [], faces = []
   for (const raw of text.split('\n')) {
@@ -437,7 +437,7 @@ export default function Workspace2D() {
     sizeCanvas()
     const ro = new ResizeObserver(sizeCanvas); ro.observe(wrap)
     return () => ro.disconnect()
-  }, [computeFit, pendingFit]) // eslint-disable-line
+  }, [computeFit, pendingFit]) 
 
   useEffect(() => {
     const c = canvasRef.current; if (!c || c.width === 0) return
@@ -467,7 +467,7 @@ export default function Workspace2D() {
       setPendingFit(true)
     }).catch(() => { toast.error('Failed to load project'); navigate('/projects') }).finally(() => setLoading(false))
     furnitureApi.getAll().then(d => { if (d?.length) setLibrary(d) }).catch(() => {})
-  }, [id]) // eslint-disable-line
+  }, [id]) 
 
   const centerView = useCallback(() => {
     const canvas = canvasRef.current; if (!canvas || canvas.width === 0) return
@@ -520,7 +520,7 @@ export default function Workspace2D() {
     if (ov) { setSelectedOverlay(ov); setSelected(null); const arr = stateRef.current.overlays[ov.type === 'door' ? 'doors' : ov.type === 'window' ? 'windows' : 'curtains']; const ovItem = arr.find(x => x.id === ov.id); if (ovItem) drag.current = { type: 'overlay-move', overlayType: ov.type, id: ov.id, offX: wx - ovItem.x, offY: wy - ovItem.y }; return }
     setSelected(null); setSelectedOverlay(null)
     drag.current = { type: 'pan', startX: e.clientX, startY: e.clientY, startPanX: panRef.current.x, startPanY: panRef.current.y }
-  }, [mode, screenToWorld]) // eslint-disable-line
+  }, [mode, screenToWorld])
 
   const onMouseMove = useCallback(e => {
     if (!drag.current) return
@@ -531,7 +531,7 @@ export default function Workspace2D() {
     else if (d.type === 'rotate') { const angle = Math.atan2(wy - d.cy, wx - d.cx) * 180 / Math.PI + 90; setItems(p => p.map(i => i.id === d.id ? { ...i, rotation: ((Math.round(angle / 5) * 5) % 360 + 360) % 360 } : i)); setDirty(true) }
     else if (d.type === 'resize') { setItems(p => p.map(i => i.id === d.id ? { ...i, w: Math.max(20, snapV(d.startW + (wx - d.mx))), d: Math.max(20, snapV(d.startD + (wy - d.my))) } : i)); setDirty(true) }
     else if (d.type === 'overlay-move') { const key = d.overlayType === 'door' ? 'doors' : d.overlayType === 'window' ? 'windows' : 'curtains'; setOverlays(o => ({ ...o, [key]: o[key].map(x => x.id === d.id ? { ...x, x: snapV(wx - d.offX), y: snapV(wy - d.offY) } : x) })); setDirty(true) }
-  }, [screenToWorld]) // eslint-disable-line
+  }, [screenToWorld]) 
 
   const onMouseUp = useCallback(() => { drag.current = null }, [])
 
@@ -557,7 +557,7 @@ export default function Workspace2D() {
     const wy = (e.clientY - rect.top - panRef.current.y) / zoomRef.current
     const pw = Math.max(20, Math.round((model.w || 100) / 100 * GRID))
     const pd = Math.max(20, Math.round((model.d || 80) / 100 * GRID))
-    // FIXED: look up b64 from stateRef to avoid stale closure
+
     const customModelEntry = model.customModelId
       ? (stateRef.current.customModels || []).find(m => m.id === model.customModelId)
       : null
@@ -593,13 +593,13 @@ export default function Workspace2D() {
       if (e.key === 'f' || e.key === 'F') centerView()
     }
     window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h)
-  }, [del, rot90, dup, undo, centerView]) // eslint-disable-line
+  }, [del, rot90, dup, undo, centerView])
 
   const addDoor = () => { setOverlays(o => ({ ...o, doors: [...o.doors, { id: Date.now(), x: OX + 10, y: OY, rotation: 0, w: 80 }] })); setDirty(true); toast('Door added') }
   const addWindow = () => { setOverlays(o => ({ ...o, windows: [...o.windows, { id: Date.now(), x: OX + (stateRef.current.cfg.width || 5) * GRID / 2, y: OY, rotation: 0, w: 100 }] })); setDirty(true); toast('Window added') }
   const addCurtain = () => { setOverlays(o => ({ ...o, curtains: [...o.curtains, { id: Date.now(), x: OX + (stateRef.current.cfg.width || 5) * GRID / 2, y: OY + 8, rotation: 0, w: 120, color: curtainColor }] })); setDirty(true); toast('Curtain added') }
 
-  // FIXED: no stale closure — reads count via stateRef
+ 
   const handleModelUpload = useCallback(async e => {
     const file = e.target.files?.[0]; if (!file) return
     const ext = file.name.split('.').pop().toLowerCase()
@@ -626,7 +626,7 @@ export default function Workspace2D() {
       toast.success(`\"${modelName}\" loaded`)
     } catch (err) { toast.error('Upload failed: ' + (err?.message || 'unknown error')) }
     finally { setUploadingModel(false); e.target.value = '' }
-  }, []) // intentionally empty — reads via stateRef
+  }, []) 
 
   const removeCustomModel = useCallback(modelId => {
     setCustomModels(prev => prev.filter(m => m.id !== modelId))
