@@ -171,7 +171,6 @@ export default function LandingPage() {
             </div>
             <span className="text-white font-semibold">RoomCraft Designer</span>
           </div>
-          <p className="text-sm">Final Year Software Engineering Project © 2024</p>
         </div>
       </footer>
     </div>
