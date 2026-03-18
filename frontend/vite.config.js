@@ -15,6 +15,12 @@ export default defineConfig({
           proxy.on('error', (err) => console.log('Proxy error:', err))
           proxy.on('proxyReq', (_, req) => console.log('Proxying:', req.method, req.url))
         }
+      },
+      // Backend file serving (uploaded models + top-view thumbnails)
+      '/files': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        secure: false,
       }
     }
   }

@@ -6,33 +6,31 @@ const BASE = '/api'
 
 async function apiFetch(path, options = {}) {
   const token = localStorage.getItem('rc_token')
-
+  const isForm = (options.body && typeof FormData !== 'undefined' && options.body instanceof FormData)
   const res = await fetch(`${BASE}${path}`, {
-    ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...(isForm ? {} : { 'Content-Type': 'application/json' }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {}),
+      ...options.headers,
     },
+    ...options,
   })
-
   if (!res.ok) {
     const text = await res.text().catch(() => 'Request failed')
     throw new Error(text || `HTTP ${res.status}`)
   }
-
   const ct = res.headers.get('content-type') || ''
   return ct.includes('application/json') ? res.json() : res.text()
 }
 
-// ─── Normalize Auth Response ──────────────────────────────────────────────────
-
+// Backend returns: { token, username, email, role, userId }
+// We normalise it into a { user, token } shape the frontend expects
 function normaliseAuthResponse(data) {
   const user = {
-    id: data.userId ?? data.id,
+    id:       data.userId   ?? data.id,
     username: data.username,
-    email: data.email,
-    role: data.role,
+    email:    data.email,
+    role:     data.role,
   }
   return { user, token: data.token }
 }
@@ -92,57 +90,37 @@ export const useAuthStore = create((set) => ({
 // ─── Projects API ─────────────────────────────────────────────────────────────
 
 export const projectsApi = {
-  getAll: () => apiFetch('/projects'),
-  getById: (id) => apiFetch(`/projects/${id}`),
-  create: (data) =>
-      apiFetch('/projects', {
-        method: 'POST',
-        body: JSON.stringify(data),
-      }),
-  update: (id, data) =>
-      apiFetch(`/projects/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(data),
-      }),
-  delete: (id) =>
-      apiFetch(`/projects/${id}`, {
-        method: 'DELETE',
-      }),
+  getAll:   ()         => apiFetch('/projects'),
+  getById:  (id)       => apiFetch(`/projects/${id}`),
+  create:   (data)     => apiFetch('/projects',       { method: 'POST',   body: JSON.stringify(data) }),
+  update:   (id, data) => apiFetch(`/projects/${id}`, { method: 'PUT',    body: JSON.stringify(data) }),
+  delete:   (id)       => apiFetch(`/projects/${id}`, { method: 'DELETE' }),
+  uploadThumbnail: (id, formData) => apiFetch(`/projects/${id}/thumbnail`, { method: 'POST', body: formData }),
 }
-
 
 // ─── Furniture API ────────────────────────────────────────────────────────────
 
 export const furnitureApi = {
-  getAll: () => apiFetch('/furniture'),
-  create: (data) =>
-      apiFetch('/furniture', {
-        method: 'POST',
-        body: JSON.stringify(data),
-      }),
-  update: (id, data) =>
-      apiFetch(`/furniture/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(data),
-      }),
-  delete: (id) =>
-      apiFetch(`/furniture/${id}`, {
-        method: 'DELETE',
-      }),
+  // Visible library: public models + user's own private uploads
+  getAll:   ()         => apiFetch('/furniture/visible'),
+  create:   (data)     => apiFetch('/furniture',       { method: 'POST',   body: JSON.stringify(data) }),
+  update:   (id, data) => apiFetch(`/furniture/${id}`, { method: 'PUT',    body: JSON.stringify(data) }),
+  delete:   (id)       => apiFetch(`/furniture/${id}`, { method: 'DELETE' }),
+  upload:   (formData) => apiFetch('/furniture/upload', { method: 'POST', body: formData }),
+  uploadPreview: (id, formData) => apiFetch(`/furniture/${id}/preview`, { method: 'POST', body: formData }),
 }
 
 // ─── Admin API ────────────────────────────────────────────────────────────────
 
 export const adminApi = {
-  getStats: () => apiFetch('/admin/stats'),
-  getUsers: () => apiFetch('/admin/users'),
-  toggleUser: (id) =>
-      apiFetch(`/admin/users/${id}/toggle`, { method: 'PUT' }),
-  deleteUser: (id) =>
-      apiFetch(`/admin/users/${id}`, { method: 'DELETE' }),
-  getProjects: () => apiFetch('/admin/projects'),
-  deleteProject: (id) =>
-      apiFetch(`/admin/projects/${id}`, { method: 'DELETE' }),
+  getStats:      ()   => apiFetch('/admin/stats'),
+  getUsers:      ()   => apiFetch('/admin/users'),
+  toggleUser:    (id) => apiFetch(`/admin/users/${id}/toggle`, { method: 'PUT' }),
+  deleteUser:    (id) => apiFetch(`/admin/users/${id}`,        { method: 'DELETE' }),
+  getProjects:   ()   => apiFetch('/admin/projects'),
+  deleteProject: (id) => apiFetch(`/admin/projects/${id}`,     { method: 'DELETE' }),
+  getFurniture:  ()   => apiFetch('/admin/furniture'),
+  updateFurniture:(id, patch) => apiFetch(`/admin/furniture/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
 }
 
 // ─── Built-in furniture library ───────────────────────────────────────────────
@@ -205,6 +183,7 @@ export const useDesignStore = create((set, get) => ({
   overlays: loadFromStorage('overlays', { doors: [], windows: [], curtains: [] }),
   cfg:      loadFromStorage('cfg', { shape: 'rectangle', width: 5, depth: 4, height: 2.8, wallColor: '#F5F5F0', floorTexture: 'wood' }),
   customModels: loadFromStorage('customModels', []),
+  wallMode: loadFromStorage('wallMode', 'solid'),
 
   // Call this when a project is first loaded (from DB).
   // It replaces local state AND saves to localStorage so the other workspace picks it up.
@@ -214,6 +193,7 @@ export const useDesignStore = create((set, get) => ({
     saveToStorage('cfg',          cfg)
     saveToStorage('customModels', customModels)
     saveToStorage('projectId',    projectId)
+    // Do not clobber wallMode here; it is a user view preference.
     set({ projectId, items, overlays, cfg, customModels })
   },
 
@@ -241,6 +221,12 @@ export const useDesignStore = create((set, get) => ({
     set({ customModels: resolved })
   },
 
+  setWallMode: (wallMode) => {
+    const resolved = typeof wallMode === 'function' ? wallMode(get().wallMode) : wallMode
+    saveToStorage('wallMode', resolved)
+    set({ wallMode: resolved })
+  },
+
   // Call this on mount in the workspace that is NOT the primary editor,
   // so it refreshes from localStorage if the other workspace saved while this one was open.
   syncFromStorage: () => {
@@ -249,6 +235,7 @@ export const useDesignStore = create((set, get) => ({
       overlays:     loadFromStorage('overlays',     { doors: [], windows: [], curtains: [] }),
       cfg:          loadFromStorage('cfg',          { shape: 'rectangle', width: 5, depth: 4, height: 2.8, wallColor: '#F5F5F0', floorTexture: 'wood' }),
       customModels: loadFromStorage('customModels', []),
+      wallMode:     loadFromStorage('wallMode',     'solid'),
     })
   },
 }))

@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react'
-import { adminApi, furnitureApi, FURNITURE_LIBRARY } from '../store/authStore'
+import React, { useEffect, useState, useRef } from 'react'
+import { adminApi, furnitureApi } from '../store/authStore'
 import AppLayout from '../components/shared/AppLayout'
 import toast from 'react-hot-toast'
-import { Users, FolderOpen, Sofa, Shield, ToggleLeft, ToggleRight, Trash2, Plus, X, Search, BarChart3 } from 'lucide-react'
+import { Users, FolderOpen, Sofa, Shield, ToggleLeft, ToggleRight, Trash2, Plus, X, Search, BarChart3, Upload, Eye, EyeOff, Globe, Lock } from 'lucide-react'
+import { renderTopViewPreview, dataUrlToBlob } from '../utils/topViewPreview'
 
 const CATEGORIES = ['Seating','Tables','Bedroom','Storage','Office','Lighting','Bathroom','Kitchen','Living Room','Decor']
 const CAT_EMOJI  = { Seating:'🪑',Tables:'🪵',Bedroom:'🛏️',Storage:'🗄️',Office:'💼',Lighting:'💡',Bathroom:'🚿',Kitchen:'🍳','Living Room':'🛋️',Decor:'🪴' }
@@ -14,12 +15,16 @@ export default function AdminDashboard() {
   const [tab,      setTab]      = useState('overview')
   const [search,   setSearch]   = useState('')
   const [showAdd,  setShowAdd]  = useState(false)
-  const [newF,     setNewF]     = useState({ name:'', category:'Seating', width:1.0, height:0.9, depth:0.8 })
+  const [newF,     setNewF]     = useState({ name:'', category:'Seating', width:1.0, height:0.9, depth:0.8, visibility:'PUBLIC' })
+  const [uploading,setUploading]= useState(false)
+  const [genPreview,setGenPreview]= useState(false)
+  const fileRef = useRef(null)
+  const [modelFile, setModelFile] = useState(null)
 
   useEffect(() => {
     adminApi.getStats().then(setStats).catch(()=>{})
     adminApi.getUsers().then(setUsers).catch(()=>{})
-    furnitureApi.getAll().then(setFurniture).catch(()=>{})
+    adminApi.getFurniture().then(setFurniture).catch(()=>{})
   }, [])
 
   const toggleUser = (id) => {
@@ -33,18 +38,82 @@ export default function AdminDashboard() {
     toast.success('User removed')
   }
 
-  const addFurniture = () => {
+  const addFurniture = async () => {
     if (!newF.name.trim()) { toast.error('Name required'); return }
-    const item = { ...newF, id: Date.now(), active: true }
-    setFurniture(f => [...f, item])
-    setShowAdd(false)
-    setNewF({ name:'', category:'Seating', width:1.0, height:0.9, depth:0.8 })
-    toast.success('Added to library!')
+    if (!modelFile) { toast.error('Please choose a .obj or .glb model'); return }
+    const ext = (modelFile.name.split('.').pop() || '').toLowerCase()
+    if (!ext) { toast.error('File must have an extension'); return }
+
+    setUploading(true)
+    try {
+      const buf = await modelFile.arrayBuffer()
+      let topViewUrl = null
+      if (genPreview) {
+        if (ext === 'glb' || ext === 'gltf' || ext === 'obj') {
+          topViewUrl = await renderTopViewPreview({ ext: ext === 'gltf' ? 'glb' : ext, buffer: buf, size: 320, bg: '#ffffff' })
+        } else {
+          toast('Top-view preview is generated after conversion to GLB (upload first).')
+        }
+      }
+      const fd = new FormData()
+      fd.append('name', newF.name)
+      fd.append('category', newF.category)
+      fd.append('width', String(newF.width ?? ''))
+      fd.append('height', String(newF.height ?? ''))
+      fd.append('depth', String(newF.depth ?? ''))
+      fd.append('visibility', newF.visibility || 'PUBLIC')
+      fd.append('modelFile', modelFile, modelFile.name)
+      if (topViewUrl) {
+        fd.append('topViewPng', dataUrlToBlob(topViewUrl), `${newF.name}_top.png`)
+        fd.append('thumbnailPng', dataUrlToBlob(topViewUrl), `${newF.name}_thumb.png`)
+      }
+
+      const created = await furnitureApi.upload(fd)
+      // If we didn't generate a preview locally (or uploaded a non-glb/obj),
+      // generate it from the converted GLB url the backend returns and attach it.
+      try {
+        if (created?.id && created?.modelUrl && (!created.topViewUrl && !created.thumbnailUrl)) {
+          const res2 = await fetch(created.modelUrl)
+          if (res2.ok) {
+            const buf2 = await res2.arrayBuffer()
+            const pv = await renderTopViewPreview({ ext: 'glb', buffer: buf2, size: 320, bg: '#ffffff' })
+            const fd2 = new FormData()
+            fd2.append('topViewPng', dataUrlToBlob(pv), `${created.name || 'model'}_top.png`)
+            fd2.append('thumbnailPng', dataUrlToBlob(pv), `${created.name || 'model'}_thumb.png`)
+            await furnitureApi.uploadPreview(created.id, fd2)
+          }
+        }
+      } catch (e) {
+        console.warn('Post-upload preview generation failed:', e)
+      }
+
+      // Refresh admin list to show visibility + previews correctly
+      const all = await adminApi.getFurniture()
+      setFurniture(all)
+      setShowAdd(false)
+      setNewF({ name:'', category:'Seating', width:1.0, height:0.9, depth:0.8, visibility:'PUBLIC' })
+      setGenPreview(false)
+      setModelFile(null)
+      if (fileRef.current) fileRef.current.value = ''
+      toast.success(`Uploaded: ${created?.name || 'model'}`)
+    } catch (e) {
+      console.error(e)
+      toast.error(e?.message || 'Upload failed')
+    } finally {
+      setUploading(false)
+    }
   }
 
-  const deleteFurniture = (id) => {
-    setFurniture(f => f.filter(x => x.id!==id))
-    toast.success('Removed')
+  const deleteFurniture = async (id) => {
+    if (!confirm('Delete this model?')) return
+    try {
+      await furnitureApi.delete(id)
+      const all = await adminApi.getFurniture()
+      setFurniture(all)
+      toast.success('Removed')
+    } catch (e) {
+      toast.error(e?.message || 'Delete failed')
+    }
   }
 
   const filteredUsers = users.filter(u =>
@@ -211,6 +280,13 @@ export default function AdminDashboard() {
                       {CATEGORIES.map(c => <option key={c}>{c}</option>)}
                     </select>
                   </div>
+                  <div>
+                    <label className="block text-xs font-medium text-surface-600 mb-1">Visibility</label>
+                    <select className="input-field text-sm" value={newF.visibility} onChange={e => setNewF(f=>({...f,visibility:e.target.value}))}>
+                      <option value="PUBLIC">Public</option>
+                      <option value="PRIVATE">Private</option>
+                    </select>
+                  </div>
                   {[['Width','width'],['Height','height'],['Depth','depth']].map(([l,k]) => (
                     <div key={k}>
                       <label className="block text-xs font-medium text-surface-600 mb-1">{l} (m)</label>
@@ -218,10 +294,28 @@ export default function AdminDashboard() {
                         value={newF[k]} onChange={e => setNewF(f=>({...f,[k]:parseFloat(e.target.value)}))} />
                     </div>
                   ))}
+                  <div className="col-span-2 md:col-span-3">
+                    <label className="block text-xs font-medium text-surface-600 mb-1">3D Model File (any format)</label>
+                    <div className="flex items-center gap-2">
+                      <input ref={fileRef} type="file" className="input-field text-sm"
+                        onChange={e => setModelFile(e.target.files?.[0] || null)} />
+                      <button type="button" onClick={() => fileRef.current?.click()}
+                        className="btn-secondary text-sm flex items-center gap-2 flex-shrink-0">
+                        <Upload className="w-4 h-4" /> Choose
+                      </button>
+                    </div>
+                    <p className="text-xs text-surface-400 mt-1">We auto-generate a top-view PNG for the 2D workspace.</p>
+                    <label className="mt-2 flex items-center gap-2 text-xs text-surface-600">
+                      <input type="checkbox" checked={genPreview} onChange={e=>setGenPreview(e.target.checked)} />
+                      Generate top-view preview now (slower on large models)
+                    </label>
+                  </div>
                 </div>
                 <div className="flex justify-end gap-2 mt-4">
                   <button onClick={() => setShowAdd(false)} className="btn-secondary text-sm">Cancel</button>
-                  <button onClick={addFurniture} className="btn-primary text-sm">Add</button>
+                  <button onClick={addFurniture} disabled={uploading} className="btn-primary text-sm">
+                    {uploading ? 'Uploading…' : 'Upload'}
+                  </button>
                 </div>
               </div>
             )}
@@ -235,12 +329,34 @@ export default function AdminDashboard() {
                     <div className="min-w-0">
                       <p className="font-medium text-surface-900 text-sm truncate">{f.name}</p>
                       <p className="text-xs text-surface-400">{f.category} · {f.width}×{f.height}×{f.depth}m</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className={`badge text-xs ${f.visibility==='PUBLIC'?'badge-green':'badge-blue'}`}>
+                          {f.visibility==='PUBLIC'?<span className="inline-flex items-center gap-1"><Globe className="w-3 h-3"/>Public</span>:<span className="inline-flex items-center gap-1"><Lock className="w-3 h-3"/>Private</span>}
+                        </span>
+                        {f.topViewUrl && <span className="text-xs text-surface-400 inline-flex items-center gap-1"><Eye className="w-3 h-3"/>2D top view</span>}
+                      </div>
                     </div>
                   </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <button
+                      title={f.active ? 'Disable' : 'Enable'}
+                      onClick={async()=>{await adminApi.updateFurniture(f.id,{active:!f.active});setFurniture(await adminApi.getFurniture())}}
+                      className="p-1.5 rounded-lg hover:bg-surface-100 text-surface-300"
+                    >
+                      {f.active ? <Eye className="w-3.5 h-3.5 text-green-600"/> : <EyeOff className="w-3.5 h-3.5 text-surface-400"/>}
+                    </button>
+                    <button
+                      title="Toggle visibility"
+                      onClick={async()=>{await adminApi.updateFurniture(f.id,{visibility:f.visibility==='PUBLIC'?'PRIVATE':'PUBLIC'});setFurniture(await adminApi.getFurniture())}}
+                      className="p-1.5 rounded-lg hover:bg-surface-100 text-surface-300"
+                    >
+                      {f.visibility==='PUBLIC' ? <Globe className="w-3.5 h-3.5 text-emerald-600"/> : <Lock className="w-3.5 h-3.5 text-blue-600"/>}
+                    </button>
                   <button onClick={() => deleteFurniture(f.id)}
                     className="p-1.5 rounded-lg hover:bg-red-50 text-surface-300 hover:text-red-500 flex-shrink-0">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
+                  </div>
                 </div>
               ))}
             </div>

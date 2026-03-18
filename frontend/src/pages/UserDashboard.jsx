@@ -223,9 +223,15 @@ export default function UserDashboard() {
                     className="card overflow-hidden hover:shadow-md transition-all duration-200 group cursor-pointer"
                     onClick={() => navigate(`/workspace/2d/${p.id}`)}>
                     <div className="h-32 relative flex items-center justify-center"
-                      style={{ background: `linear-gradient(135deg, ${config.wallColor||'#F5F5F0'}dd, ${config.wallColor||'#E8E4DC'}99)` }}>
-                      <div className="absolute inset-0 grid-bg opacity-20" />
-                      <span className="text-4xl relative">{FLOOR_ICONS[config.floorTexture] || '🏠'}</span>
+                      style={{
+                        background: p.thumbnailUrl
+                          ? `url(${p.thumbnailUrl}) center/cover no-repeat`
+                          : `linear-gradient(135deg, ${config.wallColor||'#F5F5F0'}dd, ${config.wallColor||'#E8E4DC'}99)`
+                      }}>
+                      {!p.thumbnailUrl && <>
+                        <div className="absolute inset-0 grid-bg opacity-20" />
+                        <span className="text-4xl relative">{FLOOR_ICONS[config.floorTexture] || '🏠'}</span>
+                      </>}
                       <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
                         <button onClick={e => { e.stopPropagation(); navigate(`/workspace/2d/${p.id}`) }}
                           className="bg-white text-surface-700 text-xs px-2 py-1 rounded-lg shadow font-medium hover:bg-surface-50">2D</button>
