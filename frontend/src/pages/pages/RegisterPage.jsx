@@ -26,74 +26,58 @@ export default function RegisterPage() {
   const field = (key) => (e) => setForm(f => ({ ...f, [key]: e.target.value }))
 
   return (
-  <div className="min-h-screen flex">
-    {/* Left panel */}
-    <div className="hidden lg:block lg:w-1/2 relative overflow-hidden">
-      <img
-        src="https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?w=900&auto=format&fit=crop&q=80"
-        alt="Interior design"
-        className="w-full h-full object-cover"
-      />
-      <div className="absolute inset-0 bg-gradient-to-br from-indigo-900/80 to-slate-900/60 flex flex-col justify-end p-12">
-        <div className="flex items-center gap-2.5 mb-auto pt-8">
-          <div className="w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center backdrop-blur">
-            <Boxes className="text-white" style={{width:'16px',height:'16px'}} />
-          </div>
-          <span className="text-white font-semibold">RoomCraft</span>
-        </div>
-        <p className="text-white font-bold text-2xl mb-3">Start designing for free.</p>
-        <p className="text-indigo-200 text-sm leading-relaxed">Join thousands of designers using RoomCraft to plan, visualize, and perfect their spaces.</p>
-      </div>
-    </div>
-
-    {/* Right panel */}
-    <div className="flex-1 flex items-center justify-center p-6 bg-slate-50">
+    <div className="min-h-screen bg-gradient-to-br from-surface-100 via-white to-brand-50 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
-        <div className="text-center mb-8 lg:hidden">
-          <Link to="/" className="inline-flex items-center gap-2">
-            <div className="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center">
-              <Boxes className="text-white" style={{width:'16px',height:'16px'}} />
+
+        <div className="text-center mb-8">
+          <Link to="/" className="inline-flex items-center gap-2 group">
+            <div className="w-10 h-10 bg-brand-600 rounded-xl flex items-center justify-center group-hover:bg-brand-700 transition-colors">
+              <Boxes className="w-6 h-6 text-white" />
             </div>
-            <span className="font-semibold text-slate-900">RoomCraft</span>
+            <span className="font-display font-semibold text-xl text-surface-900">RoomCraft</span>
           </Link>
         </div>
 
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
-          <div className="mb-7">
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight mb-1">Create your account</h1>
-            <p className="text-slate-500 text-sm">Start designing beautiful rooms for free</p>
+        <div className="card p-8 shadow-lg shadow-surface-200/50">
+          <div className="mb-6">
+            <h1 className="font-display text-2xl font-bold text-surface-900 mb-1">Create your account</h1>
+            <p className="text-surface-500 text-sm">Start designing beautiful rooms for free</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Username</label>
+              <label className="block text-sm font-medium text-surface-700 mb-1.5">Username</label>
               <input type="text" className="input-field" placeholder="Choose a username"
                 value={form.username} onChange={field('username')} required minLength={3} />
             </div>
+
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Email</label>
+              <label className="block text-sm font-medium text-surface-700 mb-1.5">Email</label>
               <input type="email" className="input-field" placeholder="you@example.com"
                 value={form.email} onChange={field('email')} required />
             </div>
+
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Password</label>
+              <label className="block text-sm font-medium text-surface-700 mb-1.5">Password</label>
               <div className="relative">
                 <input type={show ? 'text' : 'password'} className="input-field pr-12"
                   placeholder="At least 6 characters" value={form.password}
                   onChange={field('password')} required minLength={6} />
                 <button type="button" onClick={() => setShow(!show)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors">
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-surface-400 hover:text-surface-600 transition-colors">
                   {show ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                 </button>
               </div>
             </div>
+
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Confirm Password</label>
+              <label className="block text-sm font-medium text-surface-700 mb-1.5">Confirm Password</label>
               <input type={show ? 'text' : 'password'} className="input-field"
                 placeholder="Repeat your password" value={form.confirm}
                 onChange={field('confirm')} required />
             </div>
-            <button type="submit" disabled={isLoading} className="btn-primary w-full justify-center py-3 mt-1">
+
+            <button type="submit" disabled={isLoading} className="btn-primary w-full justify-center py-3 mt-2">
               {isLoading ? (
                 <span className="flex items-center gap-2">
                   <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -107,13 +91,12 @@ export default function RegisterPage() {
             </button>
           </form>
 
-          <p className="text-center text-sm text-slate-500 mt-6">
+          <p className="text-center text-sm text-surface-500 mt-6">
             Already have an account?{' '}
-            <Link to="/login" className="text-indigo-600 hover:text-indigo-700 font-semibold">Sign in</Link>
+            <Link to="/login" className="text-brand-600 hover:text-brand-700 font-medium">Sign in</Link>
           </p>
         </div>
       </div>
     </div>
-  </div>
-)
+  )
 }

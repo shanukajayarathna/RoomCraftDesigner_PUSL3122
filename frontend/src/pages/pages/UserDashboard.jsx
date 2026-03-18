@@ -137,19 +137,12 @@ export default function UserDashboard() {
     <AppLayout title="Dashboard">
       {showNew && <NewProjectModal onClose={() => setShowNew(false)} onCreate={handleCreate} />}
       <div className="p-6 max-w-7xl mx-auto">
-        <div className="mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-  <div>
-    <p className="text-xs text-slate-400 uppercase tracking-widest font-semibold mb-1">Dashboard</p>
-    <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-      Welcome back, {user?.username} 👋
-    </h1>
-    <p className="text-slate-500 text-sm mt-1">Your interior design workspace is ready.</p>
-  </div>
-  <button onClick={() => setShowNew(true)}
-    className="inline-flex items-center gap-2 bg-indigo-600 text-white font-semibold px-5 py-2.5 rounded-xl hover:bg-indigo-700 transition-colors shadow-sm shadow-indigo-100 text-sm self-start sm:self-auto">
-    <Plus className="w-4 h-4" /> New Project
-  </button>
-</div>
+        <div className="mb-6">
+          <div className="flex flex-col gap-1">
+            <h1 className="font-display text-3xl font-bold text-surface-900">Welcome back, {user?.username} 👋</h1>
+            <p className="text-surface-500">Your interior design workspace is ready. Click the profile icon to update your avatar and credentials.</p>
+          </div>
+        </div>
 
         {/* Stats */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
@@ -186,13 +179,13 @@ export default function UserDashboard() {
             <p className="text-sm text-surface-500 mt-1">Browse all your designs</p>
           </button>
 
-          <div className="card p-5 bg-gradient-to-br from-indigo-600 to-indigo-700 border-0 cursor-pointer hover:from-indigo-500 hover:to-indigo-600 transition-all">
-  <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center mb-3">
-    <Boxes className="w-5 h-5 text-white" />
-  </div>
-  <p className="font-semibold text-white text-sm">3D Viewer</p>
-  <p className="text-xs text-white/70 mt-1">Open any project in 3D mode</p>
-</div>
+          <div className="card p-5 bg-gradient-to-br from-brand-600 to-brand-700 border-0">
+            <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center mb-3">
+              <Boxes className="w-5 h-5 text-white" />
+            </div>
+            <p className="font-semibold text-white">3D Viewer</p>
+            <p className="text-sm text-white/70 mt-1">Open any project in 3D</p>
+          </div>
         </div>
 
         {/* Recent Projects */}

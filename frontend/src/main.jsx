@@ -2,7 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
-import { useAuthStore } from './store/authStore'
+import { useAuthStore, userApi } from './store/authStore'
 import './index.css'
 
 import LandingPage    from './pages/LandingPage'
@@ -56,6 +56,20 @@ function PublicOnlyRoute({ children }) {
   const { user } = useAuthStore()
   if (user) return <Navigate to="/dashboard" replace />
   return children
+}
+
+function AuthInitializer() {
+  const { token, setUser, logout } = useAuthStore()
+  React.useEffect(() => {
+    if (!token) return
+    userApi.getProfile().then((profile) => {
+      setUser(profile)
+      localStorage.setItem('rc_user', JSON.stringify(profile))
+    }).catch(() => {
+      logout()
+    })
+  }, [token, setUser, logout])
+  return null
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────

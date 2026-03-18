@@ -130,21 +130,15 @@ export default function AdminDashboard() {
   return (
     <AppLayout title="Admin Dashboard">
       <div className="p-6 max-w-7xl mx-auto">
-        <div className="flex items-center justify-between mb-8">
-  <div className="flex items-center gap-3">
-    <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center border border-indigo-100">
-      <Shield className="w-5 h-5 text-indigo-600" />
-    </div>
-    <div>
-      <h1 className="text-xl font-bold text-slate-900 tracking-tight">Admin Dashboard</h1>
-      <p className="text-slate-500 text-xs mt-0.5">Manage users, content, and platform settings</p>
-    </div>
-  </div>
-  <div className="hidden sm:flex items-center gap-1.5 bg-emerald-50 border border-emerald-100 text-emerald-700 text-xs font-semibold px-3 py-1.5 rounded-full">
-    <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-    System online
-  </div>
-</div>
+        <div className="flex items-center gap-3 mb-8">
+          <div className="w-10 h-10 bg-brand-100 rounded-xl flex items-center justify-center">
+            <Shield className="w-5 h-5 text-brand-600" />
+          </div>
+          <div>
+            <h1 className="font-display text-2xl font-bold text-surface-900">Admin Dashboard</h1>
+            <p className="text-surface-500 text-sm">Manage users, content, and settings</p>
+          </div>
+        </div>
 
         {/* Tabs */}
         <div className="flex gap-1 bg-surface-100 p-1 rounded-xl mb-6 w-fit">

@@ -1,8 +1,10 @@
 package com.roomcraft.controller;
 
+import com.roomcraft.dto.AuthDTOs;
 import com.roomcraft.dto.ProjectDTO;
 import com.roomcraft.dto.UserDTO;
 import com.roomcraft.model.FurnitureModel;
+import com.roomcraft.model.User;
 import com.roomcraft.repository.FurnitureModelRepository;
 import com.roomcraft.repository.ProjectRepository;
 import com.roomcraft.repository.UserRepository;
@@ -44,6 +46,29 @@ public class AdminController {
             user.setActive(!user.isActive());
             userRepository.save(user);
             return ResponseEntity.ok(Map.of("active", user.isActive()));
+        }).orElse(ResponseEntity.notFound().build());
+    }
+
+    @PutMapping("/users/{id}")
+    public ResponseEntity<?> updateUser(@PathVariable Long id, @RequestBody AuthDTOs.AdminUpdateUserRequest req) {
+        return userRepository.findById(id).map(user -> {
+            if (req.getUsername() != null && !req.getUsername().isBlank() && !req.getUsername().equals(user.getUsername())) {
+                if (userRepository.existsByUsername(req.getUsername())) return ResponseEntity.badRequest().body(Map.of("error", "Username already taken"));
+                user.setUsername(req.getUsername());
+            }
+            if (req.getEmail() != null && !req.getEmail().isBlank() && !req.getEmail().equals(user.getEmail())) {
+                if (userRepository.existsByEmail(req.getEmail())) return ResponseEntity.badRequest().body(Map.of("error", "Email already registered"));
+                user.setEmail(req.getEmail());
+            }
+            if (req.getPassword() != null && !req.getPassword().isBlank()) {
+                user.setPasswordHash(new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(req.getPassword()));
+            }
+            if (req.getRole() != null) {
+                try { user.setRole(User.Role.valueOf(req.getRole().toUpperCase())); } catch (Exception ignored) {}
+            }
+            if (req.getActive() != null) user.setActive(req.getActive());
+            userRepository.save(user);
+            return ResponseEntity.ok(UserDTO.from(user));
         }).orElse(ResponseEntity.notFound().build());
     }
 
