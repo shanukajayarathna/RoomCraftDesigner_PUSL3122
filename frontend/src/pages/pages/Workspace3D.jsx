@@ -1541,22 +1541,9 @@ export default function Workspace3D() {
     projectsApi.getById(id).then(p => {
       setProject(p)
       let c = {}, its = [], ov = { doors: [], windows: [], curtains: [] }
-      let viewOptions = { wallMode:'solid', showCeiling:false, showShadows:true, showGrid:false }
       try { c = JSON.parse(p.roomConfig) } catch {}
-      try {
-        const l = JSON.parse(p.furnitureLayout)
-        if (l?.items) {
-          its = l.items; ov = l.overlays || ov
-          if (l.viewOptions) viewOptions = { ...viewOptions, ...l.viewOptions }
-        } else if (Array.isArray(l)) {
-          its = l
-        }
-      } catch {}
+      try { const l = JSON.parse(p.furnitureLayout); if (l?.items) { its = l.items; ov = l.overlays || ov } else if (Array.isArray(l)) its = l } catch {}
       setCfg(c); setItems(its); setOverlays(ov)
-      setShowCeiling(!!viewOptions.showCeiling)
-      setShowShadows(viewOptions.showShadows ?? true)
-      setShowGrid(!!viewOptions.showGrid)
-      if (viewOptions.wallMode) setWallMode(viewOptions.wallMode)
     }).catch(() => { toast.error('Failed to load project'); navigate('/projects') }).finally(() => setLoading(false))
   }, [id]) // eslint-disable-line
 
@@ -1805,27 +1792,6 @@ export default function Workspace3D() {
     }
   }
 
-  const syncFurnitureTransforms = useCallback(() => {
-    const fg = fGroupRef.current
-    if (!fg) return
-    const currentItems = itemsRef.current || []
-    const roomHeight = cfgRef.current?.height || 2.8
-    for (const mesh of fg.children) {
-      if (!mesh.userData?.itemId) continue
-      const item = currentItems.find(i => i.id === mesh.userData.itemId)
-      if (!item) continue
-      const pos = itemTo3D(item)
-      const maxLift = Math.max(0, roomHeight - (item.heightM || 0.8))
-      const elevation = clamp((item.elevationM || 0), 0, maxLift)
-      mesh.position.set(pos.x, elevation, pos.z)
-      mesh.rotation.y = pos.ry
-    }
-  }, [])
-
-  useEffect(() => {
-    syncFurnitureTransforms()
-  }, [items, cfg.height, syncFurnitureTransforms])
-
   // ── Render doors, windows, curtains in 3D ──────────────────────────────────
   function populateOverlays(T, group, ovs, roomCfg) {
     const H = (roomCfg?.height) || 2.8
@@ -2064,13 +2030,14 @@ export default function Workspace3D() {
     const ray = new T.Raycaster(); ray.setFromCamera(ndc, cam)
     const hits = ray.intersectObjects(fg.children, true)
     if (hits.length) {
-      let o = hits[0].object
-      while (o && !o.userData?.itemId && o.parent && o.parent !== fg) o = o.parent
-      if (o?.userData?.itemId) {
+      let o = hits[0].object; while (o.parent && o.parent !== fg) o = o.parent
+      if (o.userData?.itemId) {
         setSelectedId(o.userData.itemId)
         const floorPt = raycastFloor(T, e.clientX, e.clientY)
         if (floorPt) {
+          // Use a proxy while dragging to avoid freezes with heavy meshes.
           const proxy = ensureDragProxy(T, fg, o) || null
+          o.visible = false
           dragFurnRef.current = {
             itemId: o.userData.itemId,
             mesh: o,
@@ -2106,8 +2073,6 @@ export default function Workspace3D() {
           const candidateZ = floorPt.z + d.offsetZ
           const item = itemsRef.current.find(i => i.id === d.itemId)
           const bounds = item ? clamp3DPosition(item, cfgRef.current, candidateX, candidateZ) : { x: candidateX, z: candidateZ }
-          d.mesh.position.x = bounds.x
-          d.mesh.position.z = bounds.z
           if (d.proxy) {
             d.proxy.position.x = bounds.x
             d.proxy.position.z = bounds.z
@@ -2152,9 +2117,10 @@ export default function Workspace3D() {
         })
         setDirty(true)
       }
-      // Restore proxies and commit final mesh visibility
+      // Restore real mesh, remove proxy
       const d = dragFurnRef.current
       try {
+        if (d?.mesh) d.mesh.visible = true
         if (d?.proxy && d?.proxy.parent) {
           d.proxy.parent.remove(d.proxy)
           d.proxy.geometry?.dispose?.()
@@ -2213,7 +2179,7 @@ export default function Workspace3D() {
   const save = async () => {
     setSaving(true)
     try {
-      await projectsApi.update(id, { roomConfig: JSON.stringify(cfg), furnitureLayout: JSON.stringify({ items, overlays, customModels, viewOptions: { wallMode, showCeiling, showShadows, showGrid } }) })
+      await projectsApi.update(id, { roomConfig: JSON.stringify(cfg), furnitureLayout: JSON.stringify({ items, overlays, customModels }) })
       designStore.setItems(items)
       designStore.setOverlays(overlays)
       designStore.setCfg(cfg)
@@ -2222,18 +2188,6 @@ export default function Workspace3D() {
     }
     catch { toast.error('Save failed') } finally { setSaving(false) }
   }
-
-  useEffect(() => {
-    const handler = async () => {
-      try {
-        await save()
-      } catch (e) {
-        console.warn('Event save failed', e)
-      }
-    }
-    window.addEventListener('roomcraft-save-request', handler)
-    return () => window.removeEventListener('roomcraft-save-request', handler)
-  }, [save])
 
   // ── Auto-save: debounce 1.5s after any change ──
   const autoSaveTimer = useRef(null)
@@ -2303,13 +2257,13 @@ export default function Workspace3D() {
         <div className="flex-1" />
         <div className="flex bg-white/5 rounded-lg p-0.5 border border-white/10 flex-shrink-0">
           {[['solid', 'Solid'], ['transparent', 'Frosted'], ['glass', 'Glass'], ['hidden', 'Hidden']].map(([v, l]) => (
-            <button key={v} onClick={() => { setWallMode(v); setDirty(true) }} className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${wallMode === v ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'}`}>{l}</button>
+            <button key={v} onClick={() => setWallMode(v)} className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${wallMode === v ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'}`}>{l}</button>
           ))}
         </div>
         <div className="h-5 w-px bg-white/10 flex-shrink-0" />
-        {[[showCeiling, () => { setShowCeiling(!showCeiling); setDirty(true) }, Layers, 'Ceiling'],
-          [showShadows, () => { setShowShadows(!showShadows); setDirty(true) }, Sun, 'Shadows'],
-          [showGrid, () => { setShowGrid(!showGrid); setDirty(true) }, Grid3X3, 'Grid']
+        {[[showCeiling, () => setShowCeiling(!showCeiling), Layers, 'Ceiling'],
+          [showShadows, () => setShowShadows(!showShadows), Sun, 'Shadows'],
+          [showGrid, () => setShowGrid(!showGrid), Grid3X3, 'Grid']
         ].map(([on, fn, Icon, label]) => (
           <button key={label} onClick={fn} title={label} className={`p-1.5 rounded-lg transition-all flex-shrink-0 ${on ? 'bg-purple-600/30 text-purple-300' : 'text-slate-500 hover:text-slate-300'}`}><Icon className="w-4 h-4" /></button>
         ))}

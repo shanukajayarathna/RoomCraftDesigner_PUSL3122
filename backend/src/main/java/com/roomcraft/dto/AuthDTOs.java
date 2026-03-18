@@ -34,4 +34,22 @@ public class AuthDTOs {
             this.userId = userId;
         }
     }
+
+    @Data
+    public static class UpdateProfileRequest {
+        private String username;
+        private String email;
+        private String currentPassword;
+        private String newPassword;
+    }
+
+    @Data
+    public static class AdminUpdateUserRequest {
+        private String username;
+        private String email;
+        private String password;
+        private String role;
+        private Boolean active;
+    }
 }
+

@@ -1382,7 +1382,6 @@ export default function Workspace2D() {
   const [cfg,           setCfg]           = useState({ shape:'rectangle', width:5, depth:4, height:2.8, wallColor:'#F5F5F0', floorTexture:'wood' })
   const [items,         setItems]         = useState([])
   const [overlays,      setOverlays]      = useState({ doors:[], windows:[], curtains:[] })
-  const [viewOptions,   setViewOptions]   = useState({})
   const [selected,      setSelected]      = useState(null)
   const [selectedOverlay, setSelectedOverlay] = useState(null)
   const [dirty,         setDirty]         = useState(false)
@@ -1478,27 +1477,9 @@ export default function Workspace2D() {
           its=Array.isArray(saved.items)?saved.items:[]
           ov=saved.overlays||ov
           cms=Array.isArray(saved.customModels)?saved.customModels:[]
-          setViewOptions(saved.viewOptions || {})
         }
         else if(Array.isArray(saved)) its=saved
       }catch{}
-
-      // Fallback to local browser autosave if server data fails or is empty
-      if((its.length===0 && (!ov.doors.length && !ov.windows.length && !ov.curtains.length)) || !p.furnitureLayout){
-        try {
-          const local = localStorage.getItem(`rc_last_work_${id}`)
-          if(local){
-            const backup = JSON.parse(local)
-            if(Array.isArray(backup.items) && backup.items.length){
-              its = backup.items
-              ov = backup.overlays || ov
-              cms = backup.customModels || cms
-              if (backup.viewOptions) setViewOptions(backup.viewOptions)
-            }
-          }
-        } catch {}
-      }
-
       setItems(its)
       setOverlays(ov)
       setCustomModels(cms)
@@ -1518,22 +1499,6 @@ export default function Workspace2D() {
   }
 }).catch(()=>{})
   },[id]) // eslint-disable-line
-
-  // Save design progress in browser local storage so restart keeps last design (fallback when server is unavailable)
-  useEffect(() => {
-    try {
-      localStorage.setItem(`rc_last_work_${id}`, JSON.stringify({
-        items,
-        overlays,
-        customModels,
-        roomConfig: cfg,
-        viewOptions,
-        savedAt: Date.now(),
-      }))
-    } catch (e) {
-      console.warn('Failed to save local backup', e)
-    }
-  }, [id, items, overlays, customModels, cfg])
 
   // Rebuild top-down cache from persisted custom model data (so silhouettes stay identical after 3D round-trips)
   useEffect(() => {
@@ -1883,7 +1848,7 @@ export default function Workspace2D() {
   const save=async()=>{
     setSaving(true)
     try{
-      await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays,customModels,viewOptions})})
+      await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays,customModels})})
       setDirty(false)
       toast.success('Saved!')
       ;(async () => {
@@ -1902,18 +1867,6 @@ export default function Workspace2D() {
     }
     catch{toast.error('Save failed')}finally{setSaving(false)}
   }
-
-  useEffect(() => {
-    const handler = async () => {
-      try {
-        await save()
-      } catch (e) {
-        console.warn('Event save failed', e)
-      }
-    }
-    window.addEventListener('roomcraft-save-request', handler)
-    return () => window.removeEventListener('roomcraft-save-request', handler)
-  }, [save])
 
   const exportDesignAsJson = () => {
     const normalizedItems = items.map((i) => ({
@@ -2017,7 +1970,7 @@ export default function Workspace2D() {
     clearTimeout(autoSaveTimer.current)
     autoSaveTimer.current=setTimeout(async()=>{
       try{
-        await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays,customModels,viewOptions})})
+        await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays,customModels})})
         setDirty(false)
       }catch(e){ console.warn('Auto-save failed',e) }
     },1500)
@@ -2026,22 +1979,20 @@ export default function Workspace2D() {
 
   /* ── Derived ── */
   const fullLibrary=[
-    ...library.filter(f=>f.category !== 'Outdoor'),
-    ...customModels
-      .filter(m=>m.name && m.customModelId && m.b64)
-      .map(m=>({
-        id:m.id,
-        name:m.name,
-        category:'Custom',
-        color:'#c4b5fd',
-        w:100,d:100,h:100,
-        customModelId:m.id,
-        customModelExt:m.ext,
-        previewUrl: m.previewUrl || null,
-      }))
+    ...library,
+    ...customModels.map(m=>({
+      id:m.id,
+      name:m.name,
+      category:'Custom',
+      color:'#c4b5fd',
+      w:100,d:100,h:100,
+      customModelId:m.id,
+      customModelExt:m.ext,
+      previewUrl: m.previewUrl || null,
+    }))
   ]
   const categories=['All',...new Set(fullLibrary.map(f=>f.category))]
-  const filteredLib=fullLibrary.filter(f => (furCat==='All'||f.category===furCat) && f.name.toLowerCase().includes(furSearch.toLowerCase()))
+  const filteredLib=fullLibrary.filter(f=>(furCat==='All'||f.category===furCat)&&f.name.toLowerCase().includes(furSearch.toLowerCase()))
   const selectedItem=items.find(i=>i.id===selected)
   const selectedOverlayItem=selectedOverlay
     ? (selectedOverlay.type==='door'?overlays.doors:selectedOverlay.type==='window'?overlays.windows:overlays.curtains).find(x=>x.id===selectedOverlay.id)
@@ -2166,10 +2117,10 @@ export default function Workspace2D() {
           {activeTab==='furniture'&&<>
             <div className="p-2 space-y-2 border-b border-slate-100 flex-shrink-0">
               <input className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300" placeholder="🔍 Search furniture…" value={furSearch} onChange={e=>setFurSearch(e.target.value)}/>
-              {/* Category pills in wrapping rows */}
-              <div className="flex flex-wrap gap-1">
+              {/* Horizontal scrolling category pills */}
+              <div className="flex gap-1 overflow-x-auto pb-0.5 scrollbar-none">
                 {categories.map(c=>(
-                  <button key={c} onClick={()=>setFurCat(c)} className={`text-xs px-2.5 py-1 rounded-full border transition-all font-medium ${furCat===c?'bg-blue-600 text-white border-blue-600':'border-slate-200 text-slate-500 hover:border-blue-300 hover:text-blue-600'}`}>
+                  <button key={c} onClick={()=>setFurCat(c)} className={`text-xs px-2.5 py-1 rounded-full border whitespace-nowrap flex-shrink-0 transition-all font-medium ${furCat===c?'bg-blue-600 text-white border-blue-600':'border-slate-200 text-slate-500 hover:border-blue-300 hover:text-blue-600'}`}>
                     {CAT_EMOJI[c]||''} {c}
                   </button>
                 ))}

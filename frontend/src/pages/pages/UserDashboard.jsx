@@ -57,7 +57,7 @@ function NewProjectModal({ onClose, onCreate }) {
               {SHAPES.map(s => (
                 <button key={s} onClick={() => setForm(f=>({...f,shape:s}))}
                   className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all capitalize ${
-                    form.shape===s ? 'bg-blue-600 text-white border-blue-600' : 'border-surface-200 text-surface-600 hover:border-blue-300'}`}>
+                    form.shape===s ? 'bg-brand-600 text-white border-brand-600' : 'border-surface-200 text-surface-600 hover:border-brand-300'}`}>
                   {s}
                 </button>
               ))}
@@ -137,19 +137,12 @@ export default function UserDashboard() {
     <AppLayout title="Dashboard">
       {showNew && <NewProjectModal onClose={() => setShowNew(false)} onCreate={handleCreate} />}
       <div className="p-6 max-w-7xl mx-auto">
-        <div className="mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-  <div>
-    <p className="text-xs text-slate-400 uppercase tracking-widest font-semibold mb-1">Dashboard</p>
-    <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-      Welcome back, {user?.username} 👋
-    </h1>
-    <p className="text-slate-500 text-sm mt-1">Your interior design workspace is ready.</p>
-  </div>
-  <button onClick={() => setShowNew(true)}
-    className="inline-flex items-center gap-2 bg-indigo-600 text-white font-semibold px-5 py-2.5 rounded-xl hover:bg-indigo-700 transition-colors shadow-sm shadow-indigo-100 text-sm self-start sm:self-auto">
-    <Plus className="w-4 h-4" /> New Project
-  </button>
-</div>
+        <div className="mb-6">
+          <div className="flex flex-col gap-1">
+            <h1 className="font-display text-3xl font-bold text-surface-900">Welcome back, {user?.username} 👋</h1>
+            <p className="text-surface-500">Your interior design workspace is ready. Click the profile icon to update your avatar and credentials.</p>
+          </div>
+        </div>
 
         {/* Stats */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
@@ -169,9 +162,9 @@ export default function UserDashboard() {
         {/* Quick actions */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
           <button onClick={() => setShowNew(true)}
-            className="card p-5 text-left hover:border-blue-200 hover:bg-blue-50/50 transition-all duration-200 group">
-            <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center mb-3 group-hover:bg-blue-200 transition-colors">
-              <Plus className="w-5 h-5 text-blue-600" />
+            className="card p-5 text-left hover:border-brand-200 hover:bg-brand-50/50 transition-all duration-200 group">
+            <div className="w-10 h-10 bg-brand-100 rounded-xl flex items-center justify-center mb-3 group-hover:bg-brand-200 transition-colors">
+              <Plus className="w-5 h-5 text-brand-600" />
             </div>
             <p className="font-semibold text-surface-900">New Project</p>
             <p className="text-sm text-surface-500 mt-1">Start a fresh room design</p>
@@ -186,13 +179,13 @@ export default function UserDashboard() {
             <p className="text-sm text-surface-500 mt-1">Browse all your designs</p>
           </button>
 
-          <div className="card p-5 bg-gradient-to-br from-indigo-600 to-indigo-700 border-0 cursor-pointer hover:from-indigo-500 hover:to-indigo-600 transition-all">
-  <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center mb-3">
-    <Boxes className="w-5 h-5 text-white" />
-  </div>
-  <p className="font-semibold text-white text-sm">3D Viewer</p>
-  <p className="text-xs text-white/70 mt-1">Open any project in 3D mode</p>
-</div>
+          <div className="card p-5 bg-gradient-to-br from-brand-600 to-brand-700 border-0">
+            <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center mb-3">
+              <Boxes className="w-5 h-5 text-white" />
+            </div>
+            <p className="font-semibold text-white">3D Viewer</p>
+            <p className="text-sm text-white/70 mt-1">Open any project in 3D</p>
+          </div>
         </div>
 
         {/* Recent Projects */}
@@ -200,7 +193,7 @@ export default function UserDashboard() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-surface-900 text-lg">Recent Projects</h2>
             <button onClick={() => navigate('/projects')}
-            className="text-sm text-blue-600 hover:text-blue-700 flex items-center gap-1">
+              className="text-sm text-brand-600 hover:text-brand-700 flex items-center gap-1">
               View all <ArrowRight className="w-4 h-4" />
             </button>
           </div>
@@ -243,7 +236,7 @@ export default function UserDashboard() {
                         <button onClick={e => { e.stopPropagation(); navigate(`/workspace/2d/${p.id}`) }}
                           className="bg-white text-surface-700 text-xs px-2 py-1 rounded-lg shadow font-medium hover:bg-surface-50">2D</button>
                         <button onClick={e => { e.stopPropagation(); navigate(`/workspace/3d/${p.id}`) }}
-                          className="bg-blue-600 text-white text-xs px-2 py-1 rounded-lg shadow font-medium hover:bg-blue-700">3D</button>
+                          className="bg-brand-600 text-white text-xs px-2 py-1 rounded-lg shadow font-medium hover:bg-brand-700">3D</button>
                       </div>
                     </div>
                     <div className="p-4">

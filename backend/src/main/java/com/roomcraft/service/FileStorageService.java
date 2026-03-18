@@ -53,5 +53,14 @@ public class FileStorageService {
     public boolean exists(String filename) {
         return Files.exists(rootDir.resolve(filename).normalize());
     }
+
+    public boolean delete(String filename) {
+        try {
+            Path f = rootDir.resolve(filename).normalize();
+            return Files.deleteIfExists(f);
+        } catch (IOException e) {
+            return false;
+        }
+    }
 }
 

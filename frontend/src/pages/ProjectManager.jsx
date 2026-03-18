@@ -3,312 +3,365 @@ import { useNavigate } from 'react-router-dom'
 import { projectsApi } from '../store/authStore'
 import AppLayout from '../components/shared/AppLayout'
 import toast from 'react-hot-toast'
-import { Plus, FolderOpen, Pencil, Trash2, Layers, Box, Search, X, Check, MoreVertical } from 'lucide-react'
+import {
+  Plus, FolderOpen, Pencil, Trash2, Layers, Box,
+  Search, X, Check, MoreVertical, Grid2x2, List, Filter
+} from 'lucide-react'
 
-const SHAPES = ['rectangle','square','l-shape']
-const FLOORS = ['wood','carpet','tile','marble','concrete']
-const FLOOR_ICONS = { wood:'🪵', carpet:'🟫', tile:'⬜', marble:'⬛', concrete:'🩶' }
+const SHAPES = ['rectangle', 'square', 'l-shape']
+const FLOORS = ['wood', 'carpet', 'tile', 'marble', 'concrete']
+const FLOOR_ICONS = { wood: '🪵', carpet: '🟫', tile: '⬜', marble: '⬛', concrete: '🩶' }
 
-function NewProjectModal({ onClose, onCreate }) {
-  const [form, setForm] = useState({
-    name:'My Room Design', description:'',
-    shape:'rectangle', width:5, depth:4, height:2.8,
-    wallColor:'#F5F5F0', floorTexture:'wood',
+/* ── New / Edit Modal ── */
+function ProjectModal({ onClose, onCreate, editData }) {
+  const isEdit = !!editData
+  const [form, setForm] = useState(editData || {
+    name: 'My Room Design', description: '',
+    shape: 'rectangle', width: 5, depth: 4, height: 2.8,
+    wallColor: '#F5F5F0', floorTexture: 'wood',
   })
   const [saving, setSaving] = useState(false)
 
-  const handleCreate = async () => {
+  const handleSave = async () => {
     if (!form.name.trim()) { toast.error('Enter a project name'); return }
     setSaving(true)
     try {
       const roomConfig = JSON.stringify({
-        shape:form.shape, width:+form.width, depth:+form.depth,
-        height:+form.height, wallColor:form.wallColor,
-        floorTexture:form.floorTexture, ceilingColor:'#FFFFFF',
+        shape: form.shape, width: +form.width, depth: +form.depth,
+        height: +form.height, wallColor: form.wallColor,
+        floorTexture: form.floorTexture, ceilingColor: '#FFFFFF',
       })
-      await onCreate({ name:form.name, description:form.description, roomConfig, furnitureLayout:'[]' })
+      await onCreate({ name: form.name, description: form.description, roomConfig, furnitureLayout: '[]' })
       onClose()
-    } finally {
-      setSaving(false)
-    }
+    } finally { setSaving(false) }
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg animate-slide-up">
-        <div className="flex items-center justify-between p-6 border-b border-surface-200">
-          <h2 className="font-display text-xl font-bold text-surface-900">New Room Project</h2>
-          <button onClick={onClose} className="text-surface-400 hover:text-surface-600"><X className="w-5 h-5" /></button>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', backdropFilter: 'blur(6px)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div style={{ background: '#fff', borderRadius: 22, width: '100%', maxWidth: 520, boxShadow: '0 32px 80px rgba(15,23,42,.2)', animation: 'slideUp .28s cubic-bezier(.22,1,.36,1) both' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '22px 28px', borderBottom: '1px solid #f1f5f9' }}>
+          <div>
+            <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 400, color: '#0f172a', letterSpacing: '-0.02em' }}>{isEdit ? 'Edit Project' : 'New Room Project'}</h2>
+            <p style={{ fontSize: 13, color: '#94a3b8', marginTop: 2 }}>{isEdit ? 'Update your room details' : 'Configure your room before designing'}</p>
+          </div>
+          <button onClick={onClose} style={{ width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', border: 'none', borderRadius: 8, cursor: 'pointer', color: '#94a3b8' }}>
+            <X size={16} />
+          </button>
         </div>
-        <div className="p-6 space-y-4">
+
+        <div style={{ padding: '24px 28px', display: 'flex', flexDirection: 'column', gap: 18 }}>
           <div>
-            <label className="block text-sm font-medium text-surface-700 mb-1.5">Project Name</label>
-            <input className="input-field" value={form.name}
-              onChange={e => setForm(f=>({...f,name:e.target.value}))} placeholder="e.g. Living Room Redesign" />
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 7 }}>Project Name</label>
+            <input className="input-field" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Living Room Redesign" style={{ borderRadius: 10 }} />
           </div>
           <div>
-            <label className="block text-sm font-medium text-surface-700 mb-1.5">Description (optional)</label>
-            <textarea className="input-field resize-none h-16" value={form.description}
-              onChange={e => setForm(f=>({...f,description:e.target.value}))} placeholder="Brief description…" />
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 7 }}>Description <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label>
+            <textarea className="input-field" style={{ resize: 'none', height: 72, borderRadius: 10 }} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Brief description…" />
           </div>
           <div>
-            <label className="block text-sm font-medium text-surface-700 mb-2">Room Shape</label>
-            <div className="flex gap-2">
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 7 }}>Room Shape</label>
+            <div style={{ display: 'flex', gap: 8 }}>
               {SHAPES.map(s => (
-                <button key={s} onClick={() => setForm(f=>({...f,shape:s}))}
-                  className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all capitalize ${
-                    form.shape===s ? 'bg-brand-600 text-white border-brand-600' : 'border-surface-200 text-surface-600 hover:border-brand-300'}`}>
+                <button key={s} onClick={() => setForm(f => ({ ...f, shape: s }))}
+                  style={{ flex: 1, padding: '9px 8px', borderRadius: 10, fontSize: 13, fontWeight: 600, border: `1.5px solid ${form.shape === s ? '#4c6ef5' : '#e2e8f0'}`, background: form.shape === s ? '#eef2ff' : '#fff', color: form.shape === s ? '#3730a3' : '#64748b', cursor: 'pointer', transition: 'all .15s', textTransform: 'capitalize' }}>
                   {s}
                 </button>
               ))}
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-3">
-            {[['Width (m)','width'],['Depth (m)','depth'],['Height (m)','height']].map(([l,k]) => (
-              <div key={k}>
-                <label className="block text-xs font-medium text-surface-600 mb-1">{l}</label>
-                <input type="number" className="input-field text-sm py-2" min="2" max="20" step="0.5"
-                  value={form[k]} onChange={e => setForm(f=>({...f,[k]:e.target.value}))} />
-              </div>
-            ))}
+          <div>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 7 }}>Dimensions</label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+              {[['Width (m)', 'width'], ['Depth (m)', 'depth'], ['Height (m)', 'height']].map(([l, k]) => (
+                <div key={k}>
+                  <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>{l}</label>
+                  <input type="number" className="input-field" min="2" max="20" step="0.5" style={{ fontSize: 14, padding: '9px 12px', borderRadius: 9 }} value={form[k]} onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))} />
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
             <div>
-              <label className="block text-sm font-medium text-surface-700 mb-1.5">Wall Color</label>
-              <div className="flex gap-2">
-                <input type="color" className="w-10 h-10 rounded-lg border border-surface-200 cursor-pointer p-0.5"
-                  value={form.wallColor} onChange={e => setForm(f=>({...f,wallColor:e.target.value}))} />
-                <input className="input-field flex-1 text-sm" value={form.wallColor}
-                  onChange={e => setForm(f=>({...f,wallColor:e.target.value}))} />
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 7 }}>Wall Color</label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input type="color" style={{ width: 40, height: 40, borderRadius: 9, border: '1.5px solid #e2e8f0', cursor: 'pointer', padding: 3 }} value={form.wallColor} onChange={e => setForm(f => ({ ...f, wallColor: e.target.value }))} />
+                <input className="input-field" style={{ flex: 1, fontSize: 13, padding: '9px 10px', borderRadius: 9 }} value={form.wallColor} onChange={e => setForm(f => ({ ...f, wallColor: e.target.value }))} />
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-surface-700 mb-1.5">Floor</label>
-              <select className="input-field text-sm" value={form.floorTexture}
-                onChange={e => setForm(f=>({...f,floorTexture:e.target.value}))}>
-                {FLOORS.map(f => <option key={f} value={f}>{FLOOR_ICONS[f]} {f.charAt(0).toUpperCase()+f.slice(1)}</option>)}
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 7 }}>Floor</label>
+              <select className="input-field" style={{ fontSize: 13, padding: '9px 10px', borderRadius: 9 }} value={form.floorTexture} onChange={e => setForm(f => ({ ...f, floorTexture: e.target.value }))}>
+                {FLOORS.map(f => <option key={f} value={f}>{FLOOR_ICONS[f]} {f.charAt(0).toUpperCase() + f.slice(1)}</option>)}
               </select>
             </div>
           </div>
         </div>
-        <div className="flex justify-end gap-3 px-6 pb-6">
-          <button onClick={onClose} className="btn-secondary">Cancel</button>
-          <button onClick={handleCreate} disabled={saving} className="btn-primary">
-            {saving ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Plus className="w-4 h-4" />}
-            Create Project
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '0 28px 24px' }}>
+          <button onClick={onClose} style={{ padding: '10px 20px', background: '#f8fafc', border: '1.5px solid #e2e8f0', borderRadius: 10, fontSize: 14, fontWeight: 600, color: '#64748b', cursor: 'pointer' }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving}
+            style={{ padding: '10px 22px', background: saving ? '#93c5fd' : '#4c6ef5', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 700, color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 7, boxShadow: '0 2px 12px rgba(76,110,245,.3)' }}>
+            {saving ? <span style={{ width: 14, height: 14, border: '2px solid rgba(255,255,255,.6)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 1s linear infinite', display: 'inline-block' }} />
+              : isEdit ? <Check size={14} /> : <Plus size={14} />}
+            {isEdit ? 'Save Changes' : 'Create Project'}
           </button>
         </div>
       </div>
+      <style>{`
+        @keyframes slideUp { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   )
 }
 
-// Dropdown rendered at fixed screen coordinates — escapes overflow:hidden on cards
-function CardMenu({ project, onDelete, onRenameStart }) {
-  const [open, setOpen] = useState(false)
-  const [pos, setPos] = useState({ top:0, left:0 })
-  const btnRef = useRef(null)
-
-  const toggle = useCallback((e) => {
-    e.stopPropagation()
-    if (!open && btnRef.current) {
-      const r = btnRef.current.getBoundingClientRect()
-      setPos({ top: r.bottom + 4, left: r.right - 144 })
-    }
-    setOpen(v => !v)
-  }, [open])
-
-  useEffect(() => {
-    if (!open) return
-    const close = () => setOpen(false)
-    window.addEventListener('click', close)
-    window.addEventListener('scroll', close, true)
-    return () => { window.removeEventListener('click', close); window.removeEventListener('scroll', close, true) }
-  }, [open])
-
-  return (
-    <>
-      <button ref={btnRef} onClick={toggle}
-        className="p-1.5 rounded-lg hover:bg-surface-100 text-surface-400 transition-colors">
-        <MoreVertical className="w-4 h-4" />
-      </button>
-
-      {open && (
-        <div
-          onClick={e => e.stopPropagation()}
-          style={{ position:'fixed', top: pos.top, left: pos.left, zIndex: 9999 }}
-          className="bg-white rounded-xl shadow-xl border border-surface-200 w-36 overflow-hidden">
-          <button
-            onClick={() => { onRenameStart(project); setOpen(false) }}
-            className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-surface-700 hover:bg-surface-50">
-            <Pencil className="w-4 h-4" /> Rename
-          </button>
-          <button
-            onClick={() => { onDelete(project.id); setOpen(false) }}
-            className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-red-500 hover:bg-red-50">
-            <Trash2 className="w-4 h-4" /> Delete
-          </button>
-        </div>
-      )}
-    </>
-  )
-}
-
-function ProjectCard({ project, onDelete, onRenameStart }) {
-  const navigate = useNavigate()
-  let config = {}
-  try { config = JSON.parse(project.roomConfig) } catch {}
-
-  return (
-    <div className="card overflow-hidden group hover:shadow-md transition-all duration-200">
-      {/* Thumbnail */}
-      <div className="h-36 relative cursor-pointer"
-        style={{
-          background: project.thumbnailUrl
-            ? `url(${project.thumbnailUrl}) center/cover no-repeat`
-            : `linear-gradient(135deg,${config.wallColor||'#F5F5F0'}ee,${config.wallColor||'#E8E4DC'}99)`
-        }}
-        onClick={() => navigate(`/workspace/2d/${project.id}`)}>
-        {!project.thumbnailUrl && <>
-          <div className="absolute inset-0 grid-bg opacity-20" />
-          <svg className="absolute inset-0 w-full h-full opacity-15" viewBox="0 0 200 144">
-            {config.shape==='l-shape'
-              ? <polygon points="20,20 120,20 120,80 100,80 100,124 20,124" fill="currentColor" className="text-surface-800" />
-              : <rect x="20" y="20" width={config.shape==='square'?100:160} height="104" fill="currentColor" className="text-surface-800" rx="4"/>
-            }
-          </svg>
-        </>}
-        <div className="absolute bottom-2 left-2 flex gap-1.5">
-          <span className="bg-white/90 text-surface-700 text-xs px-2 py-0.5 rounded-full font-medium">
-            {config.width||5}m × {config.depth||4}m
-          </span>
-          <span className="bg-white/90 text-surface-700 text-xs px-2 py-0.5 rounded-full font-medium capitalize">
-            {FLOOR_ICONS[config.floorTexture]||'🪵'} {config.floorTexture||'wood'}
-          </span>
-        </div>
-        <div className="absolute inset-0 bg-surface-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-          <button onClick={e=>{e.stopPropagation();navigate(`/workspace/2d/${project.id}`)}}
-            className="bg-white text-surface-800 text-xs px-3 py-1.5 rounded-lg font-semibold hover:bg-surface-50 flex items-center gap-1">
-            <Layers className="w-3.5 h-3.5" /> 2D Edit
-          </button>
-          <button onClick={e=>{e.stopPropagation();navigate(`/workspace/3d/${project.id}`)}}
-            className="bg-brand-600 text-white text-xs px-3 py-1.5 rounded-lg font-semibold hover:bg-brand-700 flex items-center gap-1">
-            <Box className="w-3.5 h-3.5" /> 3D View
-          </button>
-        </div>
-      </div>
-
-      {/* Card footer */}
-      <div className="p-4 flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <p className="font-semibold text-surface-900 truncate">{project.name}</p>
-          <p className="text-xs text-surface-400 mt-0.5 capitalize">{config.shape||'Rectangle'} room</p>
-        </div>
-        <CardMenu project={project} onDelete={onDelete} onRenameStart={onRenameStart} />
-      </div>
-    </div>
-  )
-}
-
+/* ── Main Component ── */
 export default function ProjectManager() {
+  const navigate = useNavigate()
   const [projects, setProjects] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [showNew, setShowNew] = useState(false)
-  const [search, setSearch] = useState('')
-  const [editingId, setEditingId] = useState(null)
-  const [editName, setEditName] = useState('')
+  const [loading, setLoading]   = useState(true)
+  const [search, setSearch]     = useState('')
+  const [showNew, setShowNew]   = useState(false)
+  const [editId, setEditId]     = useState(null)
+  const [menuId, setMenuId]     = useState(null)
+  const [viewMode, setViewMode] = useState('grid')
+  const menuRef = useRef(null)
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true)
     projectsApi.getAll()
-      .then(data => setProjects(data))
+      .then(setProjects)
       .catch(() => toast.error('Failed to load projects'))
       .finally(() => setLoading(false))
-  }
+  }, [])
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [load])
+
+  // Close context menu on outside click
+  useEffect(() => {
+    const handler = (e) => { if (!menuRef.current?.contains(e.target)) setMenuId(null) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
 
   const handleCreate = async (data) => {
     const project = await projectsApi.create(data)
-    setProjects(p => [project, ...p])
     toast.success('Project created!')
+    navigate(`/workspace/2d/${project.id}`)
   }
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this project? This cannot be undone.')) return
-    try {
-      await projectsApi.delete(id)
-      setProjects(p => p.filter(x => x.id !== id))
-      toast.success('Project deleted')
-    } catch {
-      toast.error('Failed to delete project')
-    }
+    if (!confirm('Delete this project?')) return
+    try { await projectsApi.delete(id); load(); toast.success('Deleted') }
+    catch { toast.error('Delete failed') }
   }
 
-  const handleRename = async () => {
-    if (!editName.trim()) return
-    try {
-      await projectsApi.update(editingId, { name: editName })
-      setProjects(p => p.map(x => x.id === editingId ? { ...x, name: editName } : x))
-      setEditingId(null)
-      toast.success('Renamed!')
-    } catch {
-      toast.error('Failed to rename')
-    }
-  }
-
-  const filtered = projects.filter(p => p.name.toLowerCase().includes(search.toLowerCase()))
+  const filtered = projects.filter(p =>
+    (p.name || '').toLowerCase().includes(search.toLowerCase())
+  )
 
   return (
     <AppLayout title="My Projects">
-      {showNew && <NewProjectModal onClose={() => setShowNew(false)} onCreate={handleCreate} />}
-      <div className="p-6 max-w-7xl mx-auto">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
+      {showNew && <ProjectModal onClose={() => setShowNew(false)} onCreate={handleCreate} />}
+
+      <div style={{ padding: '28px 32px', maxWidth: 1200, margin: '0 auto', fontFamily: 'var(--font-body)' }}>
+
+        {/* ── Header ── */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 14, marginBottom: 24 }}>
           <div>
-            <h1 className="font-display text-2xl font-bold text-surface-900">My Projects</h1>
-            <p className="text-surface-500 text-sm mt-0.5">{projects.length} design{projects.length!==1?'s':''}</p>
+            <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 28, fontWeight: 400, color: '#0f172a', letterSpacing: '-0.02em', marginBottom: 3 }}>My Projects</h1>
+            <p style={{ fontSize: 13, color: '#94a3b8' }}>{projects.length} room design{projects.length !== 1 ? 's' : ''}</p>
           </div>
-          <button onClick={() => setShowNew(true)} className="btn-primary">
-            <Plus className="w-4 h-4" /> New Project
+          <button onClick={() => setShowNew(true)}
+            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '10px 18px', background: '#4c6ef5', border: 'none', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#fff', cursor: 'pointer', transition: 'all .15s', boxShadow: '0 2px 12px rgba(76,110,245,.25)' }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#4263eb'; e.currentTarget.style.boxShadow = '0 4px 24px rgba(76,110,245,.4)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = '#4c6ef5'; e.currentTarget.style.boxShadow = '0 2px 12px rgba(76,110,245,.25)' }}>
+            <Plus size={15} /> New Project
           </button>
         </div>
 
-        <div className="relative mb-6 max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" />
-          <input className="input-field pl-10 text-sm" placeholder="Search projects…"
-            value={search} onChange={e => setSearch(e.target.value)} />
+        {/* ── Search + view toggle ── */}
+        <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
+          <div style={{ position: 'relative', flex: '1 1 240px' }}>
+            <Search size={15} color="#94a3b8" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
+            <input
+              style={{ width: '100%', padding: '10px 14px 10px 36px', background: '#fff', border: '1.5px solid #e2e8f0', borderRadius: 11, fontFamily: 'var(--font-body)', fontSize: 14, color: '#0f172a', outline: 'none', transition: 'border-color .15s' }}
+              placeholder="Search projects…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              onFocus={e => e.target.style.borderColor = '#4c6ef5'}
+              onBlur={e => e.target.style.borderColor = '#e2e8f0'}
+            />
+            {search && (
+              <button onClick={() => setSearch('')} style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', display: 'flex', alignItems: 'center' }}>
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'flex', background: '#f1f5f9', borderRadius: 10, padding: 3 }}>
+            {[['grid', Grid2x2], ['list', List]].map(([mode, Icon]) => (
+              <button key={mode} onClick={() => setViewMode(mode)}
+                style={{ width: 36, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 7, border: 'none', cursor: 'pointer', background: viewMode === mode ? '#fff' : 'transparent', color: viewMode === mode ? '#0f172a' : '#94a3b8', transition: 'all .15s', boxShadow: viewMode === mode ? '0 1px 3px rgba(0,0,0,.08)' : 'none' }}>
+                <Icon size={15} />
+              </button>
+            ))}
+          </div>
         </div>
 
-        {loading ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {[...Array(4)].map((_,i) => <div key={i} className="card h-52 animate-pulse bg-surface-100" />)}
-          </div>
-        ) : filtered.length === 0 ? (
-          <div className="card p-16 text-center">
-            <FolderOpen className="w-10 h-10 text-surface-300 mx-auto mb-3" />
-            <p className="font-semibold text-surface-700 mb-1">{search ? 'No matches' : 'No projects yet'}</p>
-            <p className="text-surface-400 text-sm mb-5">{search ? 'Try a different search' : 'Create your first room design'}</p>
-            {!search && <button onClick={() => setShowNew(true)} className="btn-primary mx-auto"><Plus className="w-4 h-4" /> Create Project</button>}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {filtered.map(p => (
-              editingId === p.id ? (
-                <div key={p.id} className="card p-4 flex items-center gap-2 h-[88px]">
-                  <input autoFocus className="input-field flex-1 text-sm py-2" value={editName}
-                    onChange={e => setEditName(e.target.value)}
-                    onKeyDown={e => { if(e.key==='Enter') handleRename(); if(e.key==='Escape') setEditingId(null) }} />
-                  <button onClick={handleRename} className="p-2 text-green-600 hover:bg-green-50 rounded-lg"><Check className="w-4 h-4" /></button>
-                  <button onClick={() => setEditingId(null)} className="p-2 text-surface-400 hover:bg-surface-100 rounded-lg"><X className="w-4 h-4" /></button>
-                </div>
-              ) : (
-                <ProjectCard key={p.id} project={p} onDelete={handleDelete}
-                  onRenameStart={proj => { setEditingId(proj.id); setEditName(proj.name) }} />
-              )
+        {/* ── Loading ── */}
+        {loading && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 14 }}>
+            {[1, 2, 3, 4, 5, 6].map(i => (
+              <div key={i} style={{ height: 200, borderRadius: 18, background: 'linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%)', backgroundSize: '400% 100%', animation: 'shimmer 1.5s ease infinite', border: '1.5px solid #e2e8f0' }} />
             ))}
           </div>
         )}
+
+        {/* ── Empty ── */}
+        {!loading && filtered.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '72px 24px', background: '#fff', borderRadius: 22, border: '1.5px dashed #e2e8f0' }}>
+            <div style={{ width: 64, height: 64, background: '#f8fafc', borderRadius: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px' }}>
+              <FolderOpen size={28} color="#cbd5e1" />
+            </div>
+            <p style={{ fontWeight: 700, fontSize: 17, color: '#334155', marginBottom: 6 }}>{search ? 'No results found' : 'No projects yet'}</p>
+            <p style={{ fontSize: 14, color: '#94a3b8', marginBottom: 22 }}>{search ? `No projects match "${search}"` : 'Create your first room design to get started'}</p>
+            {!search && (
+              <button onClick={() => setShowNew(true)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 22px', background: '#4c6ef5', border: 'none', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#fff', cursor: 'pointer', transition: 'background .15s' }}
+                onMouseEnter={e => e.currentTarget.style.background = '#4361e5'}
+                onMouseLeave={e => e.currentTarget.style.background = '#4c6ef5'}>
+                <Plus size={15} /> Create Project
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* ── Grid view ── */}
+        {!loading && filtered.length > 0 && viewMode === 'grid' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 14 }}>
+            {filtered.map(p => {
+              let config = {}
+              try { config = JSON.parse(p.roomConfig) } catch {}
+              return (
+                <div key={p.id}
+                  style={{ background: '#fff', border: '1.5px solid #e2e8f0', borderRadius: 18, overflow: 'hidden', cursor: 'pointer', transition: 'all .2s', position: 'relative', boxShadow: '0 2px 8px rgba(0,0,0,.04)' }}
+                  onClick={() => navigate(`/workspace/2d/${p.id}`)}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = '#bfdbfe'; e.currentTarget.style.boxShadow = '0 8px 32px rgba(59,130,246,.12)'; e.currentTarget.style.transform = 'translateY(-2px)' }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,.04)'; e.currentTarget.style.transform = 'none' }}>
+                  {/* Thumbnail */}
+                  <div style={{ height: 130, position: 'relative', background: p.thumbnailUrl ? `url(${p.thumbnailUrl}) center/cover` : `linear-gradient(135deg,${config.wallColor || '#F5F5F0'}dd,${config.wallColor || '#E8E4DC'}88)`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {!p.thumbnailUrl && (
+                      <>
+                        <div style={{ position: 'absolute', inset: 0, backgroundImage: 'linear-gradient(rgba(0,0,0,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(0,0,0,.04) 1px,transparent 1px)', backgroundSize: '16px 16px' }} />
+                        <span style={{ fontSize: 36, position: 'relative' }}>{FLOOR_ICONS[config.floorTexture] || '🏠'}</span>
+                      </>
+                    )}
+                    {/* 2D/3D buttons on hover */}
+                    <div className="card-actions" style={{ position: 'absolute', inset: 0, background: 'rgba(15,23,42,.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, opacity: 0, transition: 'opacity .2s' }}>
+                      <button onClick={e => { e.stopPropagation(); navigate(`/workspace/2d/${p.id}`) }}
+                        style={{ background: '#fff', color: '#0f172a', border: 'none', borderRadius: 8, padding: '7px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                        2D
+                      </button>
+                      <button onClick={e => { e.stopPropagation(); navigate(`/workspace/3d/${p.id}`) }}
+                        style={{ background: '#4c6ef5', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                        3D
+                      </button>
+                    </div>
+                    {/* Menu */}
+                    <div style={{ position: 'absolute', top: 8, right: 8 }} ref={menuId === p.id ? menuRef : null}>
+                      <button onClick={e => { e.stopPropagation(); setMenuId(menuId === p.id ? null : p.id) }}
+                        style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,.9)', border: 'none', borderRadius: 7, cursor: 'pointer', backdropFilter: 'blur(4px)' }}>
+                        <MoreVertical size={13} color="#334155" />
+                      </button>
+                      {menuId === p.id && (
+                        <div style={{ position: 'absolute', top: 32, right: 0, background: '#fff', border: '1.5px solid #e2e8f0', borderRadius: 12, padding: '6px', zIndex: 10, minWidth: 140, boxShadow: '0 8px 32px rgba(0,0,0,.12)', animation: 'fadeIn .15s ease both' }}>
+                          <button onClick={e => { e.stopPropagation(); setMenuId(null); navigate(`/workspace/2d/${p.id}`) }}
+                            style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', background: 'none', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 500, color: '#334155', cursor: 'pointer' }}
+                            onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
+                            onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                            <Layers size={13} color="#94a3b8" /> Open 2D
+                          </button>
+                          <button onClick={e => { e.stopPropagation(); setMenuId(null); navigate(`/workspace/3d/${p.id}`) }}
+                            style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', background: 'none', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 500, color: '#334155', cursor: 'pointer' }}
+                            onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
+                            onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                            <Box size={13} color="#94a3b8" /> Open 3D
+                          </button>
+                          <div style={{ height: 1, background: '#f1f5f9', margin: '4px 0' }} />
+                          <button onClick={e => { e.stopPropagation(); setMenuId(null); handleDelete(p.id) }}
+                            style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 12px', background: 'none', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 500, color: '#ef4444', cursor: 'pointer' }}
+                            onMouseEnter={e => e.currentTarget.style.background = '#fff1f2'}
+                            onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                            <Trash2 size={13} /> Delete
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ padding: '14px 16px' }}>
+                    <p style={{ fontWeight: 700, fontSize: 14, color: '#0f172a', marginBottom: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</p>
+                    <p style={{ fontSize: 12, color: '#94a3b8' }}>{config.width || 5}m × {config.depth || 4}m · <span style={{ textTransform: 'capitalize' }}>{config.shape || 'Rectangle'}</span></p>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* ── List view ── */}
+        {!loading && filtered.length > 0 && viewMode === 'list' && (
+          <div style={{ background: '#fff', borderRadius: 18, border: '1.5px solid #e2e8f0', overflow: 'hidden' }}>
+            <div style={{ background: '#f8fafc', borderBottom: '1px solid #f1f5f9', padding: '10px 20px', display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 16 }}>
+              {['Project', 'Size', 'Actions'].map(h => (
+                <span key={h} style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.07em' }}>{h}</span>
+              ))}
+            </div>
+            {filtered.map((p, i) => {
+              let config = {}
+              try { config = JSON.parse(p.roomConfig) } catch {}
+              return (
+                <div key={p.id}
+                  style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 20px', borderBottom: i < filtered.length - 1 ? '1px solid #f8fafc' : 'none', cursor: 'pointer', transition: 'background .1s' }}
+                  onClick={() => navigate(`/workspace/2d/${p.id}`)}
+                  onMouseEnter={e => e.currentTarget.style.background = '#fafaf8'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                  <div style={{ width: 44, height: 44, borderRadius: 12, background: `linear-gradient(135deg,${config.wallColor || '#F5F5F0'},#e8e3da)`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0 }}>
+                    {FLOOR_ICONS[config.floorTexture] || '🏠'}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ fontWeight: 700, fontSize: 14, color: '#0f172a', marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</p>
+                    <p style={{ fontSize: 12, color: '#94a3b8', textTransform: 'capitalize' }}>{config.shape || 'Rectangle'} · {FLOOR_ICONS[config.floorTexture] || ''} {config.floorTexture || 'wood'} floor</p>
+                  </div>
+                  <span style={{ fontSize: 12, color: '#64748b', flexShrink: 0 }}>{config.width || 5}m × {config.depth || 4}m</span>
+                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                    <button onClick={() => navigate(`/workspace/2d/${p.id}`)}
+                      style={{ padding: '6px 12px', background: '#f8fafc', border: '1.5px solid #e2e8f0', borderRadius: 8, fontSize: 12, fontWeight: 700, color: '#334155', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <Layers size={11} /> 2D
+                    </button>
+                    <button onClick={() => navigate(`/workspace/3d/${p.id}`)}
+                        style={{ padding: '6px 12px', background: '#4c6ef5', border: '1.5px solid #3b5bdb', borderRadius: 8, fontSize: 12, fontWeight: 700, color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <Box size={11} /> 3D
+                    </button>
+                    <button onClick={() => handleDelete(p.id)}
+                      style={{ width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', borderRadius: 8, cursor: 'pointer', transition: 'background .1s' }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#fff1f2'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                      <Trash2 size={13} color="#f87171" />
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
+
+      <style>{`
+        div:hover .card-actions { opacity: 1 !important; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+        @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
     </AppLayout>
   )
 }

@@ -130,21 +130,15 @@ export default function AdminDashboard() {
   return (
     <AppLayout title="Admin Dashboard">
       <div className="p-6 max-w-7xl mx-auto">
-        <div className="flex items-center justify-between mb-8">
-  <div className="flex items-center gap-3">
-    <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center border border-indigo-100">
-      <Shield className="w-5 h-5 text-indigo-600" />
-    </div>
-    <div>
-      <h1 className="text-xl font-bold text-slate-900 tracking-tight">Admin Dashboard</h1>
-      <p className="text-slate-500 text-xs mt-0.5">Manage users, content, and platform settings</p>
-    </div>
-  </div>
-  <div className="hidden sm:flex items-center gap-1.5 bg-emerald-50 border border-emerald-100 text-emerald-700 text-xs font-semibold px-3 py-1.5 rounded-full">
-    <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-    System online
-  </div>
-</div>
+        <div className="flex items-center gap-3 mb-8">
+          <div className="w-10 h-10 bg-brand-100 rounded-xl flex items-center justify-center">
+            <Shield className="w-5 h-5 text-brand-600" />
+          </div>
+          <div>
+            <h1 className="font-display text-2xl font-bold text-surface-900">Admin Dashboard</h1>
+            <p className="text-surface-500 text-sm">Manage users, content, and settings</p>
+          </div>
+        </div>
 
         {/* Tabs */}
         <div className="flex gap-1 bg-surface-100 p-1 rounded-xl mb-6 w-fit">
@@ -178,7 +172,7 @@ export default function AdminDashboard() {
                 <div className="space-y-2">
                   {users.slice(0,5).map(u => (
                     <div key={u.id} className="flex items-center gap-3 py-1.5">
-                      <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-semibold text-sm flex-shrink-0">
+                      <div className="w-8 h-8 rounded-full bg-brand-100 flex items-center justify-center text-brand-700 font-semibold text-sm flex-shrink-0">
                         {(u.username||'?')[0].toUpperCase()}
                       </div>
                       <div className="flex-1 min-w-0">
@@ -200,7 +194,7 @@ export default function AdminDashboard() {
                     <div key={cat} className="flex items-center gap-3 mb-2">
                       <span className="text-xs text-surface-600 w-28 flex-shrink-0">{cat}</span>
                       <div className="flex-1 bg-surface-100 rounded-full h-1.5">
-                        <div className="bg-blue-500 h-1.5 rounded-full" style={{ width:`${pct}%` }} />
+                        <div className="bg-brand-500 h-1.5 rounded-full" style={{ width:`${pct}%` }} />
                       </div>
                       <span className="text-xs text-surface-400 w-4 text-right">{count}</span>
                     </div>
@@ -269,7 +263,7 @@ export default function AdminDashboard() {
               <button onClick={() => setShowAdd(true)} className="btn-primary text-sm"><Plus className="w-4 h-4" /> Add Model</button>
             </div>
             {showAdd && (
-              <div className="card p-5 mb-4 border-blue-200 bg-blue-50/30 animate-slide-up">
+              <div className="card p-5 mb-4 border-brand-200 bg-brand-50/30 animate-slide-up">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="font-semibold text-surface-900">Add Furniture</h3>
                   <button onClick={() => setShowAdd(false)} className="text-surface-400"><X className="w-4 h-4" /></button>

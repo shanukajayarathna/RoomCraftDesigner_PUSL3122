@@ -2,7 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
-import { useAuthStore } from './store/authStore'
+import { useAuthStore, userApi } from './store/authStore'
 import './index.css'
 
 import LandingPage    from './pages/LandingPage'
@@ -47,7 +47,7 @@ class ErrorBoundary extends React.Component {
 // ─── Route guards ─────────────────────────────────────────────────────────────
 function PrivateRoute({ children, adminOnly = false }) {
   const { user } = useAuthStore()
-  if (!user) return <Navigate to="/login" replace />
+  if (!user) return <Navigate to="/" replace />
   if (adminOnly && user.role !== 'ADMIN') return <Navigate to="/dashboard" replace />
   return children
 }
@@ -56,6 +56,16 @@ function PublicOnlyRoute({ children }) {
   const { user } = useAuthStore()
   if (user) return <Navigate to="/dashboard" replace />
   return children
+}
+
+function AuthInitializer() {
+  const { logout } = useAuthStore()
+  React.useEffect(() => {
+    logout()
+    localStorage.removeItem('rc_token')
+    localStorage.removeItem('rc_user')
+  }, [logout])
+  return null
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
