@@ -7,7 +7,7 @@ import { Boxes, Eye, EyeOff, UserPlus } from 'lucide-react'
 export default function RegisterPage() {
   const [form, setForm] = useState({ username: '', email: '', password: '', confirm: '' })
   const [show, setShow] = useState(false)
-  const { register, isLoading } = useAuthStore()
+  const { register, logout, isLoading } = useAuthStore()
   const navigate = useNavigate()
 
   const handleSubmit = async (e) => {
@@ -56,9 +56,18 @@ export default function RegisterPage() {
             </div>
             <span className="font-semibold text-slate-900">RoomCraft</span>
           </Link>
+          <button onClick={() => { logout(); navigate('/') }}
+            className="mt-3 text-xs font-medium text-slate-500 hover:text-slate-700 transition">
+            Back to landing (logout)
+          </button>
         </div>
 
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
+          <div className="mb-3 text-right">
+            <button onClick={() => { logout(); navigate('/') }} className="text-xs font-semibold text-slate-500 hover:text-slate-700 transition">
+              ← Back to landing (logout)
+            </button>
+          </div>
           <div className="mb-7">
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight mb-1">Create your account</h1>
             <p className="text-slate-500 text-sm">Start designing beautiful rooms for free</p>

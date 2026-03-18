@@ -1792,6 +1792,27 @@ export default function Workspace3D() {
     }
   }
 
+  const syncFurnitureTransforms = useCallback(() => {
+    const fg = fGroupRef.current
+    if (!fg) return
+    const currentItems = itemsRef.current || []
+    const roomHeight = cfgRef.current?.height || 2.8
+    for (const mesh of fg.children) {
+      if (!mesh.userData?.itemId) continue
+      const item = currentItems.find(i => i.id === mesh.userData.itemId)
+      if (!item) continue
+      const pos = itemTo3D(item)
+      const maxLift = Math.max(0, roomHeight - (item.heightM || 0.8))
+      const elevation = clamp((item.elevationM || 0), 0, maxLift)
+      mesh.position.set(pos.x, elevation, pos.z)
+      mesh.rotation.y = pos.ry
+    }
+  }, [])
+
+  useEffect(() => {
+    syncFurnitureTransforms()
+  }, [items, cfg.height, syncFurnitureTransforms])
+
   // ── Render doors, windows, curtains in 3D ──────────────────────────────────
   function populateOverlays(T, group, ovs, roomCfg) {
     const H = (roomCfg?.height) || 2.8
@@ -2030,14 +2051,13 @@ export default function Workspace3D() {
     const ray = new T.Raycaster(); ray.setFromCamera(ndc, cam)
     const hits = ray.intersectObjects(fg.children, true)
     if (hits.length) {
-      let o = hits[0].object; while (o.parent && o.parent !== fg) o = o.parent
-      if (o.userData?.itemId) {
+      let o = hits[0].object
+      while (o && !o.userData?.itemId && o.parent && o.parent !== fg) o = o.parent
+      if (o?.userData?.itemId) {
         setSelectedId(o.userData.itemId)
         const floorPt = raycastFloor(T, e.clientX, e.clientY)
         if (floorPt) {
-          // Use a proxy while dragging to avoid freezes with heavy meshes.
           const proxy = ensureDragProxy(T, fg, o) || null
-          o.visible = false
           dragFurnRef.current = {
             itemId: o.userData.itemId,
             mesh: o,
@@ -2073,6 +2093,8 @@ export default function Workspace3D() {
           const candidateZ = floorPt.z + d.offsetZ
           const item = itemsRef.current.find(i => i.id === d.itemId)
           const bounds = item ? clamp3DPosition(item, cfgRef.current, candidateX, candidateZ) : { x: candidateX, z: candidateZ }
+          d.mesh.position.x = bounds.x
+          d.mesh.position.z = bounds.z
           if (d.proxy) {
             d.proxy.position.x = bounds.x
             d.proxy.position.z = bounds.z
@@ -2117,10 +2139,9 @@ export default function Workspace3D() {
         })
         setDirty(true)
       }
-      // Restore real mesh, remove proxy
+      // Restore proxies and commit final mesh visibility
       const d = dragFurnRef.current
       try {
-        if (d?.mesh) d.mesh.visible = true
         if (d?.proxy && d?.proxy.parent) {
           d.proxy.parent.remove(d.proxy)
           d.proxy.geometry?.dispose?.()

@@ -273,10 +273,10 @@ export default function ProjectManager() {
           </button>
         </div>
 
-        <div className="relative mb-6 max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" />
-          <input className="input-field pl-10 text-sm" placeholder="Search projects…"
-            value={search} onChange={e => setSearch(e.target.value)} />
+        <div className="mb-4 rounded-2xl border border-brand-100 bg-brand-50/50 p-4">
+          <p className="text-xs text-brand-700 uppercase tracking-widest font-semibold mb-1">Projects</p>
+          <h1 className="text-2xl font-bold text-surface-900 tracking-tight">My Designs</h1>
+          <p className="text-surface-500 text-sm mt-0.5">{projects.length} design{projects.length !== 1 ? 's' : ''}</p>
         </div>
 
         {loading ? (
@@ -303,7 +303,7 @@ export default function ProjectManager() {
                 </div>
               ) : (
                 <ProjectCard key={p.id} project={p} onDelete={handleDelete}
-                  onRenameStart={proj => { setEditingId(proj.id); setEditName(proj.name) }} />
+                  onRenameStart={proj => { setEditingId(proj.id); setEditName(proj.name) }} className="shadow-sm" />
               )
             ))}
           </div>

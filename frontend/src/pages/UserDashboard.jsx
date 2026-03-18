@@ -57,7 +57,7 @@ function NewProjectModal({ onClose, onCreate }) {
               {SHAPES.map(s => (
                 <button key={s} onClick={() => setForm(f=>({...f,shape:s}))}
                   className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all capitalize ${
-                    form.shape===s ? 'bg-brand-600 text-white border-brand-600' : 'border-surface-200 text-surface-600 hover:border-brand-300'}`}>
+                    form.shape===s ? 'bg-blue-600 text-white border-blue-600' : 'border-surface-200 text-surface-600 hover:border-blue-300'}`}>
                   {s}
                 </button>
               ))}
@@ -169,9 +169,9 @@ export default function UserDashboard() {
         {/* Quick actions */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
           <button onClick={() => setShowNew(true)}
-            className="card p-5 text-left hover:border-brand-200 hover:bg-brand-50/50 transition-all duration-200 group">
-            <div className="w-10 h-10 bg-brand-100 rounded-xl flex items-center justify-center mb-3 group-hover:bg-brand-200 transition-colors">
-              <Plus className="w-5 h-5 text-brand-600" />
+            className="card p-5 text-left hover:border-blue-200 hover:bg-blue-50/50 transition-all duration-200 group">
+            <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center mb-3 group-hover:bg-blue-200 transition-colors">
+              <Plus className="w-5 h-5 text-blue-600" />
             </div>
             <p className="font-semibold text-surface-900">New Project</p>
             <p className="text-sm text-surface-500 mt-1">Start a fresh room design</p>
@@ -200,7 +200,7 @@ export default function UserDashboard() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-surface-900 text-lg">Recent Projects</h2>
             <button onClick={() => navigate('/projects')}
-              className="text-sm text-brand-600 hover:text-brand-700 flex items-center gap-1">
+            className="text-sm text-blue-600 hover:text-blue-700 flex items-center gap-1">
               View all <ArrowRight className="w-4 h-4" />
             </button>
           </div>
@@ -243,7 +243,7 @@ export default function UserDashboard() {
                         <button onClick={e => { e.stopPropagation(); navigate(`/workspace/2d/${p.id}`) }}
                           className="bg-white text-surface-700 text-xs px-2 py-1 rounded-lg shadow font-medium hover:bg-surface-50">2D</button>
                         <button onClick={e => { e.stopPropagation(); navigate(`/workspace/3d/${p.id}`) }}
-                          className="bg-brand-600 text-white text-xs px-2 py-1 rounded-lg shadow font-medium hover:bg-brand-700">3D</button>
+                          className="bg-blue-600 text-white text-xs px-2 py-1 rounded-lg shadow font-medium hover:bg-blue-700">3D</button>
                       </div>
                     </div>
                     <div className="p-4">

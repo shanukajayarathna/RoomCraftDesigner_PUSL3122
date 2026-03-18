@@ -271,15 +271,6 @@ export const FURNITURE_LIBRARY = [
   { id: 'picture-frame',      name: 'Picture Frame',       category: 'Decor',       w: 50,  d: 4,   h: 40, color: '#c8b898' },
   { id: 'room-divider',       name: 'Room Divider',        category: 'Decor',       w: 160, d: 4,   h: 175,color: '#c8b890' },
  
-  // ── OUTDOOR ──────────────────────────────────────────────────────────────
-  { id: 'outdoor-sofa',       name: 'Outdoor Sofa',        category: 'Outdoor',     w: 205, d: 85,  h: 80, color: '#8dcc6e' },
-  { id: 'outdoor-chair',      name: 'Outdoor Chair',       category: 'Outdoor',     w: 75,  d: 78,  h: 82, color: '#7dbc5e' },
-  { id: 'outdoor-table',      name: 'Outdoor Table',       category: 'Outdoor',     w: 110, d: 75,  h: 74, color: '#6dac4e' },
-  { id: 'sun-lounger',        name: 'Sun Lounger',         category: 'Outdoor',     w: 65,  d: 195, h: 35, color: '#a0d880' },
-  { id: 'bbq-grill',          name: 'BBQ Grill',           category: 'Outdoor',     w: 80,  d: 55,  h: 90, color: '#484848' },
-  { id: 'planters-box',       name: 'Planter Box',         category: 'Outdoor',     w: 90,  d: 35,  h: 38, color: '#9a7860' },
-  { id: 'hot-tub',            name: 'Hot Tub',             category: 'Outdoor',     w: 200, d: 200, h: 95, color: '#5bc8de' },
-  { id: 'umbrella',           name: 'Patio Umbrella',      category: 'Outdoor',     w: 200, d: 200, h: 250,color: '#e8c870' },
 
 ]
 

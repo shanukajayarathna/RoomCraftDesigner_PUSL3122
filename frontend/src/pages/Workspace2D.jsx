@@ -1,2355 +1,2563 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, {
+  useEffect, useLayoutEffect, useRef, useState, useCallback
+} from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { projectsApi, useDesignStore } from '../store/authStore'
+import { projectsApi, furnitureApi, FURNITURE_LIBRARY, useDesignStore } from '../store/authStore'
 import toast from 'react-hot-toast'
-import { ChevronLeft, Save, RotateCcw, Layers, Sun, Grid3X3, Box } from 'lucide-react'
+import { renderTopViewPreview } from '../utils/topViewPreview'
+import {
+  Save, Undo, RotateCw, Trash2, Box,
+  ZoomIn, ZoomOut, MousePointer, ChevronLeft,
+  Move, Maximize2, Copy, DoorOpen, Columns,
+  Wind, Upload, Package, X, Palette,
+  ChevronRight, ChevronDown, ChevronUp
+} from 'lucide-react'
 
-const GRID2D = 50
-const OX2D   = 80
-const OY2D   = 70
+/* ── Constants ── */
+const GRID = 50
+const SNAP = 5
+const OX   = 80
+const OY   = 70
+const MAX_CUSTOM_MODELS = 10
 
 const CAT_COLOR = {
-  Seating:'#93b4fd', Tables:'#6ee7b7', Bedroom:'#fca5a5',
-  Storage:'#d8b4fe', Office:'#fcd34d', Lighting:'#fdba74',
-  Bathroom:'#a5f3fc', Kitchen:'#bbf7d0', 'Living Room':'#bfdbfe', Decor:'#f9a8d4',
-  Custom:'#c4b5fd',
+  Seating:     '#7c9ef8',   // deeper blue-periwinkle
+  Tables:      '#5ad4a0',   // rich jade
+  Bedroom:     '#f4856e',   // warm terracotta
+  Storage:     '#b892f2',   // deep lavender
+  Office:      '#f5c842',   // golden amber
+  Lighting:    '#ff9f4a',   // warm orange
+  Bathroom:    '#5bc8de',   // aqua
+  Kitchen:     '#72da8c',   // fresh green
+  'Living Room':'#7ab8f5',  // sky blue
+  Decor:       '#f48db4',   // dusty rose
+  Custom:      '#a78bfa',   // violet
+  Outdoor:     '#8dcc6e',   // grass green
+  Dining:      '#e8a96a',   // warm wood
 }
 
-const hex2color = (T, h) => {
-  const n = parseInt((h || '#aaaaaa').replace('#', ''), 16)
-  return new T.Color((n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255)
+const CAT_EMOJI = {
+  Seating:'🪑', Tables:'🪵', Bedroom:'🛏️', Storage:'🗄️', Office:'💼',
+  Lighting:'💡', Bathroom:'🚿', Kitchen:'🍳', 'Living Room':'🛋️', Decor:'🪴',
+  Custom:'📦',
+  Dining:'🍽️', 
+  Outdoor:'🌿',   
+}
+const FLOOR_COL = {
+  wood:'#c8a46e', carpet:'#9b8fa8', tile:'#e0e0e0', marble:'#ece8e2', concrete:'#b8b8b8'
+}
+const COLOR_PRESETS = [
+  '#93b4fd','#6ee7b7','#fca5a5','#fcd34d','#fdba74',
+  '#a5f3fc','#d8b4fe','#f9a8d4','#bbf7d0','#bfdbfe',
+]
+
+const snapV = v => Math.round(v / SNAP) * SNAP
+const clamp = (v, min, max) => Math.min(max, Math.max(min, v))
+const normalRot = v => ((+v % 360) + 360) % 360
+
+function roomBounds(cfg) {
+  const W = (cfg.shape === 'square' ? Math.min(cfg.width || 5, cfg.depth || 4) : (cfg.width || 5)) * GRID
+  const D = (cfg.shape === 'square' ? Math.min(cfg.width || 5, cfg.depth || 4) : (cfg.depth || 4)) * GRID
+  return {
+    minX: OX,
+    minY: OY,
+    maxX: OX + W,
+    maxY: OY + D,
+  }
 }
 
-function roomDims(cfg) {
-  const W = cfg.width || 5, D = cfg.depth || 4, H = cfg.height || 2.8
-  if (cfg.shape === 'l-shape') { const cw = W * 0.6, cd = D * 0.55; return { W, D, H, shape: 'l-shape', cw, cd } }
-  if (cfg.shape === 'square') { const S = Math.min(W, D); return { W: S, D: S, H, shape: 'square' } }
-  return { W, D, H, shape: 'rectangle' }
+function clampItemToRoom(item, cfg, targetX, targetY) {
+  const B = roomBounds(cfg)
+  const x = clamp(targetX, B.minX, Math.max(B.minX, B.maxX - (item.w || 20)))
+  const y = clamp(targetY, B.minY, Math.max(B.minY, B.maxY - (item.d || 20)))
+  return { x, y }
 }
 
-function wallSegments(dims) {
-  const { W, D, shape, cw, cd } = dims
-  if (shape === 'l-shape') return [
-    { x1: 0, z1: 0, x2: W, z2: 0 },
-    { x1: W, z1: 0, x2: W, z2: cd },
-    { x1: W, z1: cd, x2: cw, z2: cd },
-    { x1: cw, z1: cd, x2: cw, z2: D },
-    { x1: cw, z1: D, x2: 0, z2: D },
-    { x1: 0, z1: D, x2: 0, z2: 0 },
-  ]
-  return [
-    { x1: 0, z1: 0, x2: W, z2: 0 },
-    { x1: W, z1: 0, x2: W, z2: D },
-    { x1: W, z1: D, x2: 0, z2: D },
-    { x1: 0, z1: D, x2: 0, z2: 0 },
-  ]
+/* ── Synchronous base64 (reliable, no FileReader race conditions) ── */
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  const chunk = 8192
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk))
+  }
+  return btoa(binary)
 }
 
-/**
- * Build a floor (or ceiling) mesh using PlaneGeometry.
- * PlaneGeometry is trivial to position — no ShapeGeometry rotation math issues.
- *
- * Walls span x:[0,W] z:[0,D].
- * PlaneGeometry(W, D) after rotateX(-PI/2) is centred at origin.
- * Setting mesh.position to (W/2, y, D/2) aligns it perfectly with the walls.
- *
- * For L-shapes we tile two PlaneGeometry rectangles.
- */
-function buildFloorOrCeiling(T, dims, material, yPos) {
-  const { W, D, shape, cw, cd } = dims
-
-  const makePlane = (pw, pd, cx, cz) => {
-    const geo = new T.PlaneGeometry(pw, pd)
-    geo.rotateX(-Math.PI / 2)
-    const mesh = new T.Mesh(geo, material)
-    mesh.position.set(cx, yPos, cz)
-    mesh.receiveShadow = true
-    return mesh
-  }
-
-  if (shape === 'l-shape') {
-    const group = new T.Group()
-    // Rect 1: top portion — full width W, depth cd  (z: 0 → cd)
-    group.add(makePlane(W, cd, W / 2, cd / 2))
-    // Rect 2: bottom-left portion — width cw, depth (D-cd)  (z: cd → D)
-    group.add(makePlane(cw, D - cd, cw / 2, cd + (D - cd) / 2))
-    return group
-  }
-
-  // Rectangle or square: one plane
-  return makePlane(W, D, W / 2, D / 2)
-}
-
-function buildRoom(T, cfg, opts = {}) {
-  const { wallMode = 'solid', showCeiling = false, showShadows = true, showGrid = false } = opts
-  const dims = roomDims(cfg)
-  const { W, D, H } = dims
-  const group = new T.Group(); group.name = 'room'
-
-  // --- Floor ---
-  const ft = cfg.floorTexture || 'wood'
-  const floorTex =
-    ft === 'wood' ? woodTex(T)
-      : ft === 'carpet' ? fabricTex(T, '#7a6a88')
-        : ft === 'tile' ? tileTex(T)
-          : ft === 'marble' ? marbleTex(T)
-            : concreteTex(T)
-  // Repeats: ~1m tiles/planks feel right; clamp to avoid huge repeats.
-  floorTex.repeat.set(Math.max(1, Math.min(12, W * 1.2)), Math.max(1, Math.min(12, D * 1.2)))
-  floorTex.anisotropy = 8
-  const floorMat = new T.MeshStandardMaterial({
-    map: floorTex,
-    color: 0xffffff,
-    roughness: ft === 'marble' ? 0.12 : ft === 'tile' ? 0.35 : ft === 'wood' ? 0.78 : 0.95,
-    metalness: ft === 'marble' ? 0.08 : 0,
-  })
-  // Reduce z-fighting with furniture bottoms and overlay indicators.
-  floorMat.polygonOffset = true
-  floorMat.polygonOffsetFactor = 1
-  floorMat.polygonOffsetUnits = 1
-  const floorMesh = buildFloorOrCeiling(T, dims, floorMat, 0)
-  floorMesh.name = 'floor'
-  group.add(floorMesh)
-
-  // --- Grid ---
-  if (showGrid) {
-    const gh = new T.GridHelper(Math.max(W, D) * 1.5, 24, 0x555577, 0x333355)
-    gh.position.set(W / 2, 0.003, D / 2); gh.name = 'floorGrid'; group.add(gh)
-  }
-
-  // --- Ceiling ---
-  if (showCeiling) {
-    const ceilMat = new T.MeshStandardMaterial({ color: 0xf5f3ee, roughness: 0.95, side: T.DoubleSide })
-    const ceilMesh = buildFloorOrCeiling(T, dims, ceilMat, H)
-    ceilMesh.name = 'ceiling'
-    group.add(ceilMesh)
-  }
-
-  // --- Walls ---
-  const wThick = 0.12
-  const opacity = wallMode === 'solid' ? 1 : wallMode === 'transparent' ? 0.3 : wallMode === 'glass' ? 0.1 : 0
-  const wallColor = wallMode === 'glass' ? new T.Color(0.55, 0.78, 1) : hex2color(T, cfg.wallColor || '#F5F5F0')
-  const wallTex = plasterTex(T)
-  const wallMat = new T.MeshStandardMaterial({
-    map: wallMode === 'solid' ? wallTex : null,
-    color: wallColor,
-    roughness: wallMode === 'glass' ? 0.05 : 0.86,
-    metalness: wallMode === 'glass' ? 0.15 : 0,
-    transparent: wallMode !== 'solid', opacity, side: T.DoubleSide,
-  })
-
-  wallSegments(dims).forEach((seg, idx) => {
-    const dx = seg.x2 - seg.x1, dz = seg.z2 - seg.z1
-    const len = Math.sqrt(dx * dx + dz * dz); if (len < 0.001) return
-    // Extend walls slightly so corners overlap (prevents visible gaps).
-    const overlap = wThick * 0.95
-    const geo = new T.BoxGeometry(len + overlap, H, wThick)
-    const mat = wallMat.clone()
-    if (mat.map) {
-      mat.map = mat.map.clone()
-      mat.map.wrapS = mat.map.wrapT = T.RepeatWrapping
-      // Horizontal repeat based on wall length, vertical based on height.
-      mat.map.repeat.set(Math.max(1, Math.min(12, len * 1.4)), Math.max(1, Math.min(8, H * 1.2)))
-      mat.map.needsUpdate = true
-    }
-    const mesh = new T.Mesh(geo, mat)
-    mesh.position.set((seg.x1 + seg.x2) / 2, H / 2, (seg.z1 + seg.z2) / 2)
-    mesh.rotation.y = Math.atan2(dz, dx)
-    mesh.castShadow = showShadows && wallMode === 'solid'; mesh.receiveShadow = true
-    mesh.name = `wall_${idx}`; group.add(mesh)
-
-    if (wallMode === 'solid' || wallMode === 'transparent') {
-      const skMat = new T.MeshStandardMaterial({ color: 0xe8e4dc, roughness: 0.9 })
-      const sk = new T.Mesh(new T.BoxGeometry(len, 0.09, wThick + 0.002), skMat)
-      sk.position.set((seg.x1 + seg.x2) / 2, 0.045, (seg.z1 + seg.z2) / 2)
-      sk.rotation.y = Math.atan2(dz, dx); group.add(sk)
-    }
-  })
-
-  return group
-}
-
-// ── Procedural texture helpers ──────────────────────────────────────────────
-function makeCanvasTexture(T, size, drawFn) {
-  const canvas = document.createElement('canvas')
-  canvas.width = canvas.height = size
-  drawFn(canvas.getContext('2d'), size)
-  const tex = new T.CanvasTexture(canvas)
-  tex.wrapS = tex.wrapT = T.RepeatWrapping
-  tex.anisotropy = 8
-  return tex
-}
-
-function woodTex(T) {
-  return makeCanvasTexture(T, 512, (ctx, s) => {
-    // Rich warm-oak base
-    const g = ctx.createLinearGradient(0, 0, s * 0.7, s)
-    g.addColorStop(0,   '#c8a05a')
-    g.addColorStop(0.3, '#b07838')
-    g.addColorStop(0.6, '#c89858')
-    g.addColorStop(1,   '#b87840')
-    ctx.fillStyle = g; ctx.fillRect(0, 0, s, s)
- 
-    // Primary grain lines (long, sweeping)
-    for (let i = 0; i < 60; i++) {
-      const y = i * (s / 55) + (Math.random() - 0.5) * 9
-      const alpha = Math.random() * 0.2 + 0.04
-      ctx.strokeStyle = `rgba(65,30,8,${alpha})`
-      ctx.lineWidth = Math.random() * 1.8 + 0.25
-      ctx.beginPath(); ctx.moveTo(0, y)
-      ctx.bezierCurveTo(s*0.22, y+(Math.random()*14-7), s*0.72, y+(Math.random()*14-7), s, y+(Math.random()*9-4.5))
-      ctx.stroke()
-    }
- 
-    // Fine secondary grain (darker)
-    for (let i = 0; i < 30; i++) {
-      const y = Math.random() * s
-      ctx.strokeStyle = `rgba(45,18,4,${Math.random()*0.1+0.02})`
-      ctx.lineWidth = Math.random() * 0.7 + 0.15
-      ctx.beginPath(); ctx.moveTo(0, y)
-      ctx.bezierCurveTo(s*0.3, y+(Math.random()*8-4), s*0.7, y+(Math.random()*8-4), s, y+(Math.random()*5-2.5))
-      ctx.stroke()
-    }
- 
-    // Annual ring knots (2-3)
-    for (let k = 0; k < 3; k++) {
-      const kx = (0.15 + Math.random()*0.7)*s, ky = (0.15 + Math.random()*0.7)*s
-      const oval = 0.55 + Math.random()*0.3
-      const tilt = Math.random()*0.5
-      for (let r = 2; r < 35; r += 4 + Math.random()*2) {
-        ctx.strokeStyle = `rgba(55,24,6,${0.05+Math.random()*0.09})`
-        ctx.lineWidth = 0.6
-        ctx.beginPath(); ctx.ellipse(kx, ky, r, r*oval, tilt, 0, Math.PI*2); ctx.stroke()
-      }
-    }
- 
-    // Light planing streaks
-    for (let i = 0; i < 16; i++) {
-      const x = Math.random()*s
-      ctx.strokeStyle = `rgba(225,188,112,${Math.random()*0.14})`
-      ctx.lineWidth = 0.6
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x+(Math.random()*14-7), s); ctx.stroke()
-    }
- 
-    // Glossy sheen
-    const sg = ctx.createLinearGradient(0, 0, s*0.7, s*0.4)
-    sg.addColorStop(0,   'rgba(255,255,255,0.09)')
-    sg.addColorStop(0.4, 'rgba(255,255,255,0.18)')
-    sg.addColorStop(1,   'rgba(255,255,255,0.02)')
-    ctx.fillStyle = sg; ctx.fillRect(0, 0, s, s)
-  })
-}
- 
-function fabricTex(T, hexColor) {
-  return makeCanvasTexture(T, 256, (ctx, s) => {
-    const n = parseInt((hexColor||'#93b4fd').replace('#',''), 16)
-    const r = (n >> 16 & 255), g = (n >> 8 & 255), b = (n & 255)
-    ctx.fillStyle = hexColor||'#93b4fd'; ctx.fillRect(0, 0, s, s)
- 
-    // Warp threads (vertical — slightly darker)
-    for (let i = 0; i < s; i += 3) {
-      const a = Math.random()*0.18 + 0.03
-      ctx.fillStyle = `rgba(${Math.max(0,r-38)},${Math.max(0,g-38)},${Math.max(0,b-38)},${a})`
-      ctx.fillRect(i, 0, 1.5, s)
-    }
-    // Weft threads (horizontal — lighter)
-    for (let i = 0; i < s; i += 3) {
-      const a = Math.random()*0.14 + 0.02
-      ctx.fillStyle = `rgba(${Math.min(255,r+32)},${Math.min(255,g+32)},${Math.min(255,b+32)},${a})`
-      ctx.fillRect(0, i, s, 1.5)
-    }
-    // Inter-weave texture noise
-    for (let i = 0; i < 1000; i++) {
-      const fx = Math.random()*s, fy = Math.random()*s
-      const dv = Math.random() > 0.5 ? 28 : -28
-      ctx.fillStyle = `rgba(${Math.max(0,Math.min(255,r+dv))},${g},${b},0.03)`
-      ctx.fillRect(fx, fy, 1, 1)
-    }
-    // Subtle pilling bumps
-    for (let i = 0; i < 80; i++) {
-      const px = Math.random()*s, py = Math.random()*s
-      ctx.fillStyle = `rgba(${r},${g},${b},0.08)`
-      ctx.beginPath(); ctx.arc(px, py, Math.random()*1.5+0.5, 0, Math.PI*2); ctx.fill()
-    }
-    // Final sheen
-    const sg = ctx.createLinearGradient(0, 0, s, s)
-    sg.addColorStop(0, 'rgba(255,255,255,0.07)'); sg.addColorStop(1, 'rgba(255,255,255,0.02)')
-    ctx.fillStyle = sg; ctx.fillRect(0, 0, s, s)
-  })
-}
- 
-function marbleTex(T) {
-  return makeCanvasTexture(T, 512, (ctx, s) => {
-    // Warm off-white base with subtle gradient
-    const g = ctx.createLinearGradient(0, 0, s, s)
-    g.addColorStop(0, '#eee9e2'); g.addColorStop(0.4, '#f4f0ea'); g.addColorStop(1, '#e8e4de')
-    ctx.fillStyle = g; ctx.fillRect(0, 0, s, s)
- 
-    // Deep veins (3 passes: thick main → medium → hairline)
-    const passes = [
-      { count:4,  thick:3.0,  alpha:0.24 },
-      { count:8,  thick:1.4,  alpha:0.15 },
-      { count:18, thick:0.45, alpha:0.08 },
-    ]
-    for (const pass of passes) {
-      for (let i = 0; i < pass.count; i++) {
-        ctx.strokeStyle = `rgba(148,128,100,${pass.alpha + Math.random()*0.09})`
-        ctx.lineWidth = pass.thick * (Math.random()*0.65+0.65)
-        ctx.beginPath()
-        let x = Math.random()*s, y = Math.random()*s
-        ctx.moveTo(x, y)
-        for (let j = 0; j < 5; j++) {
-          x += (Math.random()-0.44)*s*0.36
-          y += (Math.random()-0.44)*s*0.36
-          ctx.bezierCurveTo(x+(Math.random()-0.5)*72, y+(Math.random()-0.5)*72,
-                            x+(Math.random()-0.5)*48, y+(Math.random()-0.5)*48, x, y)
-        }
-        ctx.stroke()
-      }
-    }
-    // Grey accent veins
-    for (let i = 0; i < 3; i++) {
-      ctx.strokeStyle = `rgba(100,90,82,${0.08+Math.random()*0.06})`
-      ctx.lineWidth = 0.6 + Math.random()*0.8
-      ctx.beginPath()
-      let x = Math.random()*s, y = Math.random()*s; ctx.moveTo(x, y)
-      for (let j = 0; j < 4; j++) {
-        x += (Math.random()-0.45)*s*0.4; y += (Math.random()-0.45)*s*0.4
-        ctx.bezierCurveTo(x+(Math.random()-0.5)*55, y+(Math.random()-0.5)*55, x, y, x, y)
-      }
-      ctx.stroke()
-    }
-    // Crystal sheen patches (realistic marble sparkle)
-    for (let i = 0; i < 8; i++) {
-      const gx = Math.random()*s, gy = Math.random()*s
-      const rg = ctx.createRadialGradient(gx, gy, 0, gx, gy, 50+Math.random()*80)
-      rg.addColorStop(0, 'rgba(255,255,255,0.16)'); rg.addColorStop(1, 'rgba(255,255,255,0)')
-      ctx.fillStyle = rg; ctx.fillRect(0, 0, s, s)
-    }
-  })
-}
- 
-function metalTex(T) {
-  return makeCanvasTexture(T, 256, (ctx, s) => {
-    ctx.fillStyle = '#b8b8b4'; ctx.fillRect(0, 0, s, s)
-    // Directional brushing (horizontal)
-    for (let i = 0; i < 100; i++) {
-      const y = i*(s/96)
-      const l = (135+Math.random()*65)|0
-      ctx.strokeStyle = `rgba(${l},${l},${l},${Math.random()*0.38+0.04})`
-      ctx.lineWidth = Math.random()*1.5+0.2
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(s, y+(Math.random()*2-1)); ctx.stroke()
-    }
-    // Specular highlight band
-    const hg = ctx.createLinearGradient(s*0.25, 0, s*0.75, 0)
-    hg.addColorStop(0,   'rgba(255,255,255,0)')
-    hg.addColorStop(0.5, 'rgba(255,255,255,0.28)')
-    hg.addColorStop(1,   'rgba(255,255,255,0)')
-    ctx.fillStyle = hg; ctx.fillRect(0, 0, s, s)
-    // Edge vignette
-    const vg = ctx.createLinearGradient(0, 0, 0, s)
-    vg.addColorStop(0,   'rgba(0,0,0,0.12)')
-    vg.addColorStop(0.5, 'rgba(0,0,0,0)')
-    vg.addColorStop(1,   'rgba(0,0,0,0.12)')
-    ctx.fillStyle = vg; ctx.fillRect(0, 0, s, s)
-    // Fine scratches
-    for (let i = 0; i < 18; i++) {
-      ctx.strokeStyle = `rgba(255,255,255,${Math.random()*0.12})`
-      ctx.lineWidth = 0.3
-      const sy = Math.random()*s
-      ctx.beginPath(); ctx.moveTo(Math.random()*s*0.3, sy); ctx.lineTo(s-Math.random()*s*0.3, sy+(Math.random()*3-1.5)); ctx.stroke()
-    }
-  })
-}
- 
-function concreteTex(T) {
-  return makeCanvasTexture(T, 256, (ctx, s) => {
-    ctx.fillStyle = '#989894'; ctx.fillRect(0, 0, s, s)
-    // Aggregate speckle (varied size)
-    for (let i = 0; i < 1600; i++) {
-      const x = Math.random()*s, y = Math.random()*s
-      const r = Math.random()*2.6+0.2
-      const v = (75+Math.random()*88)|0
-      ctx.fillStyle = `rgba(${v},${v},${v-4},${Math.random()*0.3+0.04})`
-      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill()
-    }
-    // Coarse aggregate (larger, sparser)
-    for (let i = 0; i < 120; i++) {
-      const x = Math.random()*s, y = Math.random()*s
-      const r = Math.random()*4+1.5
-      const v = (68+Math.random()*40)|0
-      ctx.fillStyle = `rgba(${v},${v},${v},${Math.random()*0.15+0.03})`
-      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill()
-    }
-    // Trowel smear marks
-    for (let i = 0; i < 25; i++) {
-      ctx.strokeStyle = `rgba(185,185,182,${Math.random()*0.12})`
-      ctx.lineWidth = Math.random()*5+0.8
-      ctx.beginPath(); ctx.moveTo(Math.random()*s, Math.random()*s)
-      ctx.lineTo(Math.random()*s, Math.random()*s); ctx.stroke()
-    }
-    // Control joints
-    ctx.strokeStyle = 'rgba(60,60,58,0.3)'; ctx.lineWidth = 1.8
-    for (const x of [s/3, s*2/3]) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,s); ctx.stroke() }
-    for (const y of [s/3, s*2/3]) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(s,y); ctx.stroke() }
-  })
-}
- 
-function tileTex(T) {
-  return makeCanvasTexture(T, 256, (ctx, s) => {
-    ctx.fillStyle = '#e2e0dc'; ctx.fillRect(0, 0, s, s)
-    const ts = 64
-    for (let tx = 0; tx < s; tx += ts) {
-      for (let ty = 0; ty < s; ty += ts) {
-        // Tile base with colour variation
-        const v = (Math.random()*22-11)|0
-        const base = 226+v
-        ctx.fillStyle = `rgb(${base},${base-1},${base-3})`
-        ctx.fillRect(tx+2, ty+2, ts-4, ts-4)
-        // Gloss gradient
-        const tg = ctx.createLinearGradient(tx, ty, tx+ts, ty+ts)
-        tg.addColorStop(0, 'rgba(255,255,255,0.22)'); tg.addColorStop(1, 'rgba(255,255,255,0)')
-        ctx.fillStyle = tg; ctx.fillRect(tx+2, ty+2, ts-4, ts-4)
-        // Subtle edge shadow (gives depth)
-        ctx.fillStyle = 'rgba(0,0,0,0.06)'
-        ctx.fillRect(tx+ts-5, ty+2, 3, ts-4)  // right
-        ctx.fillRect(tx+2, ty+ts-5, ts-4, 3)  // bottom
-        // Surface micro-texture
-        for (let m = 0; m < 6; m++) {
-          ctx.fillStyle = `rgba(${base+Math.round(Math.random()*8-4)},${base},${base},0.08)`
-          ctx.fillRect(tx+3+Math.random()*(ts-8), ty+3+Math.random()*(ts-8), 2, 2)
-        }
-      }
-    }
-    // Grout lines
-    ctx.fillStyle = '#a6a6a2'
-    for (let tx = 0; tx < s; tx += ts) ctx.fillRect(tx, 0, 2, s)
-    for (let ty = 0; ty < s; ty += ts) ctx.fillRect(0, ty, s, 2)
-    // Grout highlight (light edge)
-    ctx.fillStyle = 'rgba(255,255,255,0.18)'
-    for (let tx = 0; tx < s; tx += ts) ctx.fillRect(tx+1, 0, 1, s)
-    for (let ty = 0; ty < s; ty += ts) ctx.fillRect(0, ty+1, s, 1)
-  })
-}
- 
-function plasterTex(T) {
-  return makeCanvasTexture(T, 512, (ctx, s) => {
-    // Warm off-white base
-    const g = ctx.createLinearGradient(0, 0, s, s)
-    g.addColorStop(0, '#f7f4ec'); g.addColorStop(1, '#ede9e0')
-    ctx.fillStyle = g; ctx.fillRect(0, 0, s, s)
- 
-    // Fine grain (plaster surface)
-    for (let i = 0; i < 4500; i++) {
-      const x = Math.random()*s, y = Math.random()*s
-      ctx.fillStyle = `rgba(108,98,85,${Math.random()*0.07})`
-      ctx.beginPath(); ctx.arc(x, y, Math.random()*1.4+0.1, 0, Math.PI*2); ctx.fill()
-    }
-    // Coarser aggregate
-    for (let i = 0; i < 400; i++) {
-      const x = Math.random()*s, y = Math.random()*s
-      ctx.fillStyle = `rgba(90,80,68,${Math.random()*0.05})`
-      ctx.beginPath(); ctx.arc(x, y, Math.random()*3+0.8, 0, Math.PI*2); ctx.fill()
-    }
-    // Trowel strokes (flowing)
-    for (let i = 0; i < 32; i++) {
-      ctx.strokeStyle = `rgba(95,85,72,${Math.random()*0.055})`
-      ctx.lineWidth = Math.random()*3.5+0.8
-      const y = (i/32)*s + (Math.random()*14-7)
-      ctx.beginPath(); ctx.moveTo(0, y)
-      ctx.bezierCurveTo(s*0.28, y+(Math.random()*28-14), s*0.72, y+(Math.random()*28-14), s, y+(Math.random()*18-9))
-      ctx.stroke()
-    }
-    // Sub-surface light scatter (warm SSS feel)
-    const rg1 = ctx.createRadialGradient(s*0.35, s*0.3, 0, s*0.35, s*0.3, s*0.65)
-    rg1.addColorStop(0, 'rgba(255,248,235,0.14)'); rg1.addColorStop(1, 'rgba(255,248,235,0)')
-    ctx.fillStyle = rg1; ctx.fillRect(0, 0, s, s)
-    const rg2 = ctx.createRadialGradient(s*0.7, s*0.75, 0, s*0.7, s*0.75, s*0.5)
-    rg2.addColorStop(0, 'rgba(235,225,215,0.1)'); rg2.addColorStop(1, 'rgba(235,225,215,0)')
-    ctx.fillStyle = rg2; ctx.fillRect(0, 0, s, s)
-  })
-}
-
-function buildFurnitureMesh(T, item) {
-  const group = new T.Group(); group.userData.itemId = item.id
-  const wM = item.widthM || (item.w / GRID2D)
-  const dM = item.depthM || (item.d / GRID2D)
-  const hM = item.heightM || 0.8
-  const hexColor = item.color || CAT_COLOR[item.category] || '#93b4fd'
-  const col = hex2color(T, hexColor)
-  const EPS = 0.003
-
-  // ── Shared material helpers ──────────────────────────────────────
-  const mkStd = (opts) => {
-    const m = new T.MeshStandardMaterial(opts)
-    m.dithering = true
-    m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -1
-    return m
-  }
-
-  const mkWood = (tint = '#b87c4c', rough = 0.75) => {
-    const tex = woodTex(T); tex.repeat.set(2, 2)
-    return mkStd({ map: tex, color: hex2color(T, tint), roughness: rough, metalness: 0 })
-  }
-  const mkFabric = (hex, rough = 0.92) => {
-    const tex = fabricTex(T, hex); tex.repeat.set(4, 4)
-    const mat = mkStd({ map: tex, roughness: rough, metalness: 0 })
-    // Sheen for fabric microfiber look
-    mat.envMapIntensity = 0.15
-    return mat
-  }
-  const mkMetal = (color = 0x999999, rough = 0.25, metal = 0.85) =>
-    mkStd({ color, roughness: rough, metalness: metal })
-  const mkGlass = (color = 0x88bbff, op = 0.35) =>
-    mkStd({ color, roughness: 0.04, metalness: 0.1, transparent: true, opacity: op, side: T.DoubleSide })
-  const mkCeramic = (color = 0xf5f8fc) =>
-    mkStd({ color, roughness: 0.08, metalness: 0.04 })
-  const mkPaint = (color, rough = 0.7) => mkStd({ color, roughness: rough, metalness: 0 })
-
-  const metalMat = mkMetal(0x909090)
-  const chromeMat = mkMetal(0xcccccc, 0.12, 0.95)
-
-  // Geometry helpers
-  const safe = v => Math.max(0.002, v)
-  const addMesh = (geo, mat, px, py, pz, rx = 0, ry = 0, rz = 0) => {
-    const m = new T.Mesh(geo, mat)
-    m.position.set(px, py + EPS, pz)
-    m.rotation.set(rx, ry, rz)
-    m.castShadow = true; m.receiveShadow = true
-    group.add(m)
-    // Subtle edge lines for crisp definition
-    const eg = new T.EdgesGeometry(geo, 25)
-    const el = new T.LineSegments(eg, new T.LineBasicMaterial({ color: 0x060c1a, transparent: true, opacity: 0.1 }))
-    el.position.copy(m.position); el.rotation.copy(m.rotation)
-    group.add(el)
-    return m
-  }
-  const box = (w, h, d, mat, px, py, pz, rx, ry, rz) =>
-    addMesh(new T.BoxGeometry(safe(w), safe(h), safe(d)), mat, px, py, pz, rx, ry, rz)
-  const cyl = (rt, rb, h, segs, mat, px, py, pz, rx = 0, ry = 0, rz = 0) =>
-    addMesh(new T.CylinderGeometry(rt, rb, h, segs), mat, px, py, pz, rx, ry, rz)
-  const sph = (r, mat, px, py, pz) =>
-    addMesh(new T.SphereGeometry(r, 14, 10), mat, px, py, pz)
-
-  const legs4 = (fw, fd, lh, lr, mat, yOff = 0) => {
-    for (const [sx, sz] of [[-1, -1], [-1, 1], [1, -1], [1, 1]])
-      cyl(lr, lr * 1.15, lh, 10, mat, sx * (fw / 2 - lr * 1.4), yOff + lh / 2, sz * (fd / 2 - lr * 1.4))
-  }
-
-  const name = (item.name || item.label || '').toLowerCase()
-
-  switch (item.category) {
-
-    // ══════════════════════════════════════════════════════════════
-    case 'Seating': {
-      const isSofa = name.includes('sofa') || name.includes('couch') || wM > 1.4
-      const isChair = !isSofa
-
-      const fabricMat = mkFabric(hexColor)
-      const darkFabric = mkFabric(hexColor, 0.98)
-      darkFabric.color = col.clone().multiplyScalar(0.48)
-      const pipingMat = mkStd({ color: col.clone().multiplyScalar(0.38), roughness: 0.88 })
-      const legMat = mkMetal(0x3a3a3a, 0.35, 0.75)
-      const legWoodMat = mkWood('#3a2010', 0.88)
-
-      const seatH  = hM * 0.44
-      const seatD  = dM * 0.56
-      const backH  = hM - seatH
-      const armW   = wM * 0.09
-      const baseH  = seatH * 0.13
-
-      // ── Plinth / base ──
-      box(wM, baseH, dM, mkStd({ color: 0x111111, roughness: 0.95 }), 0, baseH / 2, 0)
-      // Toe kick shadow strip
-      box(wM - 0.02, 0.01, dM - 0.02, mkStd({ color: 0x080808, roughness: 1 }), 0, baseH + 0.005, 0)
-
-      // ── Legs ──
-      const useMetal = name.includes('modern') || name.includes('metal')
-      const chosenLegMat = useMetal ? legMat : legWoodMat
-      const legH = seatH * 0.22
-      const legR = 0.028
-      for (const [sx, sz] of [[-1,-1],[-1,1],[1,-1],[1,1]]) {
-        // Tapered leg: wider top, narrow bottom
-        cyl(legR * 1.1, legR * 0.65, legH, 10, chosenLegMat,
-          sx*(wM/2 - armW*0.55), baseH + legH/2, sz*(seatD/2 - 0.055))
-        // Foot cap
-        cyl(legR*0.9, legR*1.1, 0.012, 10, mkMetal(0x222222, 0.5, 0.6),
-          sx*(wM/2 - armW*0.55), baseH + legH + 0.006, sz*(seatD/2 - 0.055))
-      }
-      if (isSofa) {
-        // Centre support leg(s)
-        cyl(legR, legR*0.7, legH, 10, chosenLegMat, 0, baseH + legH/2, 0)
-      }
-
-      // ── Seat cushion(s) ──
-      const numCushions = isSofa ? Math.max(2, Math.round(wM / 0.65)) : 1
-      const cushW = (wM - armW*2 - 0.008*(numCushions-1)) / numCushions
-      const cushH = seatH * 0.72
-
-      for (let i = 0; i < numCushions; i++) {
-        const cx = -wM/2 + armW + cushW/2 + i*(cushW + 0.008)
-        // Main cushion body
-        box(cushW - 0.012, cushH, seatD - 0.015, fabricMat, cx, baseH + legH + cushH/2, -dM*0.03)
-        // Top piping welt
-        box(cushW - 0.012, 0.016, seatD - 0.015, pipingMat, cx, baseH + legH + cushH + 0.008, -dM*0.03)
-        // Front piping welt
-        box(cushW - 0.012, cushH, 0.016, pipingMat, cx, baseH + legH + cushH/2, (seatD - 0.015)/2 + 0.008)
-        // Cushion bottom border (darker)
-        box(cushW - 0.012, 0.018, seatD - 0.015, pipingMat, cx, baseH + legH + 0.009, -dM*0.03)
-        // Seam line between cushions
-        if (i < numCushions - 1) {
-          box(0.01, cushH*0.9, seatD*0.85, pipingMat, cx + cushW/2 + 0.004, baseH + legH + cushH*0.5, -dM*0.03)
-        }
-      }
-
-      // ── Back cushion(s) ──
-      const backCushH = backH * 0.80
-      const backCushD = dM * 0.13
-      for (let i = 0; i < numCushions; i++) {
-        const cx = -wM/2 + armW + cushW/2 + i*(cushW + 0.008)
-        // Back cushion body
-        box(cushW - 0.012, backCushH, backCushD, darkFabric, cx, baseH + legH + seatH*0.78 - cushH + backCushH/2, -seatD/2 + backCushD/2 - 0.005)
-        // Top piping
-        box(cushW - 0.012, 0.016, backCushD, pipingMat, cx, baseH + legH + seatH*0.78 - cushH + backCushH + 0.008, -seatD/2 + backCushD/2 - 0.005)
-        // Side seams
-        if (i < numCushions-1) {
-          box(0.01, backCushH*0.9, backCushD*0.9, pipingMat, cx + cushW/2 + 0.004, baseH + legH + seatH*0.78 - cushH + backCushH*0.5, -seatD/2 + backCushD/2 - 0.005)
-        }
-      }
-
-      // ── Back panel (behind cushions) ──
-      box(wM, backH * 0.94, dM * 0.07, darkFabric, 0, baseH + legH + cushH + backCushH*0.47, -seatD/2 - dM*0.032)
-      // Back panel piping top
-      box(wM - armW*2, 0.018, dM*0.07, pipingMat, 0, baseH + legH + cushH + backCushH + 0.009, -seatD/2 - dM*0.032)
-
-      // ── Armrests ──
-      const armH = hM * 0.74
-      for (const sx of [-1, 1]) {
-        const ax = sx*(wM/2 - armW/2)
-        // Armrest body
-        box(armW, armH, seatD + dM*0.045, darkFabric, ax, baseH + legH + armH/2, -dM*0.02)
-        // Armrest top pad (slightly wider, rounded feel via scale)
-        box(armW + 0.018, 0.048, seatD + dM*0.048, fabricMat, ax, baseH + legH + armH + 0.024, -dM*0.02)
-        // Armrest front face
-        box(armW, armH*0.5, 0.018, pipingMat, ax, baseH + legH + armH*0.26, (seatD + dM*0.045)/2 + 0.009)
-        // Armrest inner welt
-        box(0.012, armH*0.88, seatD*0.9, pipingMat, ax - sx*(armW/2 - 0.006), baseH + legH + armH*0.46, -dM*0.02)
-      }
-
-      break
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    case 'Tables': {
-      const isRound  = name.includes('round') || name.includes('coffee') || name.includes('oval')
-      const isCoffee = name.includes('coffee') || hM < 0.55
-      const isGlass  = name.includes('glass')
-
-      const topWood  = mkWood('#9c6b3c', 0.68)
-      const darkWood = mkWood('#4e2e10', 0.84)
-      const glassTop = mkGlass(0xaaccee, 0.28)
-      const topMat   = isGlass ? glassTop : topWood
-      const legMat2  = isGlass ? mkMetal(0x888888, 0.18, 0.82) : darkWood
-
-      const tt      = 0.048   // top thickness
-      const apronH  = 0.065
-      const overhang= 0.038
-      const lh      = hM - tt - apronH
-      const lr      = 0.032
-
-      // ── Table top ──
-      if (isRound) {
-        cyl(wM/2 + overhang, wM/2 + overhang, tt, 40, topMat, 0, hM - tt/2, 0)
-        // Bevel edge ring
-        cyl(wM/2 + overhang + 0.006, wM/2 + overhang - 0.006, tt*0.3, 40, darkWood, 0, hM - tt*0.85, 0)
-      } else {
-        box(wM + overhang*2, tt, dM + overhang*2, topMat, 0, hM - tt/2, 0)
-        // Bevel edge strips
-        box(wM + overhang*2, tt*0.28, 0.012, darkWood, 0, hM - tt*0.86, (dM + overhang*2)/2 + 0.006)
-        box(wM + overhang*2, tt*0.28, 0.012, darkWood, 0, hM - tt*0.86, -(dM + overhang*2)/2 - 0.006)
-        box(0.012, tt*0.28, dM + overhang*2, darkWood, (wM + overhang*2)/2 + 0.006, hM - tt*0.86, 0)
-        box(0.012, tt*0.28, dM + overhang*2, darkWood, -(wM + overhang*2)/2 - 0.006, hM - tt*0.86, 0)
-      }
-
-      // ── Apron ──
-      if (isRound) {
-        cyl(wM/2 - 0.03, wM/2 - 0.03, apronH, 36, darkWood, 0, hM - tt - apronH/2, 0)
-      } else {
-        const apronThick = 0.022
-        box(wM - 0.06, apronH, apronThick, darkWood, 0, hM - tt - apronH/2,  dM/2 - apronThick/2)
-        box(wM - 0.06, apronH, apronThick, darkWood, 0, hM - tt - apronH/2, -dM/2 + apronThick/2)
-        box(apronThick, apronH, dM - 0.06, darkWood,  wM/2 - apronThick/2, hM - tt - apronH/2, 0)
-        box(apronThick, apronH, dM - 0.06, darkWood, -wM/2 + apronThick/2, hM - tt - apronH/2, 0)
-      }
-
-      // ── Legs ──
-      const legPositions = isRound
-        ? [[0, -wM*0.3],[wM*0.26, wM*0.15],[-wM*0.26, wM*0.15]]
-        : [[-wM/2+lr*1.8, -dM/2+lr*1.8],[wM/2-lr*1.8, -dM/2+lr*1.8],
-           [-wM/2+lr*1.8,  dM/2-lr*1.8],[wM/2-lr*1.8,  dM/2-lr*1.8]]
-
-      for (const [lx, lz] of legPositions) {
-        // Upper wider section
-        cyl(lr,       lr*1.18, lh*0.55, 12, legMat2, lx, lh*0.275,  lz)
-        // Lower tapered section
-        cyl(lr*0.55,  lr,      lh*0.45, 12, legMat2, lx, lh*0.775,  lz)
-        // Top mounting block
-        box(lr*3.2, apronH*0.7, lr*3.2, darkWood, lx, hM - tt - apronH*0.35, lz)
-        // Foot pad
-        cyl(lr*1.0, lr*0.85, 0.016, 10, mkMetal(0x1a1a1a, 0.6, 0.5), lx, lh - 0.008, lz)
-      }
-
-      // ── Cross stretcher (for non-round tables) ──
-      if (!isRound && !isCoffee) {
-        const stretchY = lh * 0.55
-        box(wM - lr*5, 0.022, 0.022, darkWood, 0, stretchY, -dM/2 + lr*2.2)
-        box(wM - lr*5, 0.022, 0.022, darkWood, 0, stretchY,  dM/2 - lr*2.2)
-        box(0.022, 0.022, dM - lr*5, darkWood, -wM/2 + lr*2.2, stretchY, 0)
-        box(0.022, 0.022, dM - lr*5, darkWood,  wM/2 - lr*2.2, stretchY, 0)
-      }
-
-      break
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    case 'Bedroom': {
-      if (name.includes('wardrobe') || name.includes('closet')) {
-        const bodyMat = mkWood('#c8a46e', 0.7)
-        const darkWood = mkWood('#7a5028', 0.82)
-        const mirrorMat = mkGlass(0x99aacc, 0.15)
-
-        // Carcass
-        box(wM, hM, dM, bodyMat, 0, hM / 2, 0)
-        // Top crown molding
-        box(wM + 0.02, 0.04, dM + 0.02, darkWood, 0, hM + 0.02, 0)
-        // Toe kick
-        box(wM - 0.02, 0.08, dM + 0.01, mkStd({ color: 0x111111, roughness: 0.9 }), 0, 0.04, 0)
-        // Door panels (2 doors)
-        const doorW = wM / 2 - 0.03
-        for (const sx of [-1, 1]) {
-          const dx = sx * (wM / 4)
-          // Door panel
-          box(doorW, hM - 0.14, 0.02, bodyMat, dx, hM / 2, dM / 2 + 0.01)
-          // Inset mirror panel on upper portion
-          box(doorW - 0.06, hM * 0.42, 0.005, mirrorMat, dx, hM * 0.72, dM / 2 + 0.022)
-          // Door frame (raised panel look)
-          box(doorW - 0.06, 0.015, 0.012, darkWood, dx, hM * 0.5, dM / 2 + 0.018)
-          // Handle
-          cyl(0.008, 0.008, 0.1, 8, chromeMat, dx - sx * (doorW * 0.38), hM * 0.5, dM / 2 + 0.025, 0, 0, Math.PI / 2)
-        }
-        // Center divider
-        box(0.02, hM - 0.1, dM - 0.02, darkWood, 0, hM / 2, 0)
-        // Interior shelves
-        for (let i = 1; i < 4; i++)
-          box(wM / 2 - 0.04, 0.018, dM - 0.04, mkWood('#d4a86a'), -wM / 4, i * (hM / 4), 0)
-
-      } else if (name.includes('nightstand') || name.includes('bedside')) {
-        const bodyMat = mkWood('#c8a46e', 0.72)
-        const darkWood = mkWood('#7a5028', 0.82)
-        box(wM, hM, dM, bodyMat, 0, hM / 2, 0)
-        box(wM + 0.01, 0.025, dM + 0.01, darkWood, 0, hM + 0.012, 0)
-        box(wM - 0.02, 0.018, dM - 0.02, darkWood, 0, hM / 2, 0) // drawer divider
-        box(wM - 0.02, 0.025, 0.008, darkWood, 0, hM * 0.75, dM / 2 + 0.004) // drawer face top
-        box(wM - 0.02, 0.025, 0.008, darkWood, 0, hM * 0.3, dM / 2 + 0.004)  // drawer face bottom
-        // Handles
-        cyl(0.007, 0.007, 0.06, 8, chromeMat, 0, hM * 0.75, dM / 2 + 0.02, 0, 0, Math.PI / 2)
-        cyl(0.007, 0.007, 0.06, 8, chromeMat, 0, hM * 0.3, dM / 2 + 0.02, 0, 0, Math.PI / 2)
-        // Toe kick
-        box(wM, 0.065, dM, mkStd({ color: 0x111111, roughness: 0.9 }), 0, 0.032, 0)
-
-     } else {
-        // ── BED ────────────────────────────────────────────────
-        const frameMat  = mkWood('#7a4e28', 0.80)
-        const darkFrame = mkWood('#3e1e08', 0.88)
-        const mattMat   = mkStd({ color: 0xf2ede8, roughness: 0.90 })
-        const duvMat    = mkFabric('#e4e0f2', 0.88)
-        const pillowMat = mkStd({ color: 0xfafafa, roughness: 0.82 })
-        const upholMat  = mkFabric(hexColor || '#c8b89a', 0.88)
-        const pipingMat2= mkStd({ color: 0xd8d4e8, roughness: 0.85 })
-
-        const frameH  = hM * 0.36
-        const mattH   = hM * 0.20
-        const boxSprH = mattH * 0.45
-        const baseH   = frameH * 0.52
-
-        // ── Legs ──
-        for (const [sx, sz] of [[-1,-1],[-1,1],[1,-1],[1,1]]) {
-          cyl(0.042, 0.048, baseH, 12, darkFrame,
-            sx*(wM/2 - 0.065), baseH/2, sz*(dM/2 - 0.065))
-          // Foot cap ring
-          cyl(0.052, 0.042, 0.014, 12, mkMetal(0x1a1a1a, 0.5, 0.7),
-            sx*(wM/2 - 0.065), baseH - 0.007, sz*(dM/2 - 0.065))
-        }
-
-        // ── Side rails ──
-        const railH = frameH * 0.20
-        box(wM - 0.12, railH, 0.058, frameMat, 0, baseH + railH/2, -dM/2 + 0.03)
-        box(wM - 0.12, railH, 0.058, frameMat, 0, baseH + railH/2,  dM/2 - 0.03)
-        box(0.058, railH, dM*0.72, frameMat, -wM/2 + 0.03, baseH + railH/2, 0)
-        box(0.058, railH, dM*0.72, frameMat,  wM/2 - 0.03, baseH + railH/2, 0)
-
-        // ── Slats (5 visible) ──
-        const slotZ = [-dM*0.26, -dM*0.12, dM*0.02, dM*0.18, dM*0.34]
-        for (const sz of slotZ)
-          box(wM - 0.14, 0.022, 0.075, frameMat, 0, baseH + 0.011, sz)
-
-        // ── Box spring ──
-        box(wM - 0.1, boxSprH, dM - 0.1,
-          mkStd({ color: 0x888888, roughness: 0.96 }), 0, baseH + boxSprH/2, 0)
-        // Box spring border fabric
-        box(wM - 0.09, boxSprH*0.3, 0.015,
-          mkStd({ color: 0x999999, roughness: 0.95 }), 0, baseH + boxSprH*0.85, -dM/2 + 0.055)
-        box(wM - 0.09, boxSprH*0.3, 0.015,
-          mkStd({ color: 0x999999, roughness: 0.95 }), 0, baseH + boxSprH*0.85,  dM/2 - 0.055)
-
-        // ── Mattress ──
-        box(wM - 0.082, mattH, dM - 0.082, mattMat,
-          0, baseH + boxSprH + mattH/2, 0)
-        // Mattress piping (top)
-        box(wM - 0.075, 0.014, dM - 0.075, pipingMat2,
-          0, baseH + boxSprH + mattH + 0.007, 0)
-        // Mattress piping (sides — 4 edges)
-        box(wM - 0.075, 0.014, 0.015, pipingMat2, 0, baseH + boxSprH + mattH*0.5, -(dM - 0.082)/2 - 0.0075)
-        box(wM - 0.075, 0.014, 0.015, pipingMat2, 0, baseH + boxSprH + mattH*0.5,  (dM - 0.082)/2 + 0.0075)
-        // Quilted mattress top surface (grid lines)
-        const quiltMat = mkStd({ color: 0xeae6e0, roughness: 0.88 })
-        const qRows = 3, qCols = Math.round(wM / 0.28)
-        for (let r = 1; r < qRows; r++) {
-          box(wM - 0.09, 0.006, 0.008, quiltMat, 0,
-            baseH + boxSprH + mattH + 0.008,
-            -dM/2 + 0.05 + r*((dM-0.1)/qRows))
-        }
-        for (let c = 1; c < qCols; c++) {
-          box(0.008, 0.006, dM - 0.09, quiltMat,
-            -wM/2 + 0.05 + c*((wM-0.1)/qCols),
-            baseH + boxSprH + mattH + 0.008, 0)
-        }
-
-        // ── Duvet ──
-        const duvY   = baseH + boxSprH + mattH + 0.012
-        const duvLen = dM * 0.74
-        box(wM - 0.09, 0.072, duvLen, duvMat, 0, duvY + 0.036,  dM*0.04)
-        // Duvet fold-back
-        box(wM - 0.09, 0.028, dM*0.11, duvMat, 0, duvY + 0.072 + 0.014, -dM*0.31)
-        // Duvet piping edges
-        box(wM - 0.09, 0.015, 0.016, pipingMat2, 0, duvY + 0.065, -duvLen/2 + dM*0.04)
-        box(wM - 0.09, 0.015, 0.016, pipingMat2, 0, duvY + 0.065,  duvLen/2 + dM*0.04)
-
-        // ── Pillows ──
-        const pNum = wM > 1.2 ? 2 : 1
-        const pW   = wM > 1.2 ? wM*0.38 : wM*0.58
-        const pXs  = pNum === 2 ? [-wM*0.22, wM*0.22] : [0]
-        const pY   = duvY + 0.072 + 0.055
-        const pZ   = -dM*0.295
-        for (const px of pXs) {
-          // Pillow body
-          box(pW, 0.105, dM*0.21, pillowMat, px, pY + 0.052, pZ)
-          // Pillow top seam
-          box(pW - 0.02, 0.012, dM*0.21 - 0.02, pipingMat2, px, pY + 0.105 + 0.006, pZ)
-          // Pillow case stitching line
-          box(pW - 0.04, 0.007, dM*0.21 - 0.04, mkStd({ color: 0xe0dde8, roughness: 0.9 }), px, pY + 0.112, pZ)
-          // Pillow side gusset
-          box(0.014, 0.09, dM*0.19, pipingMat2, px + pW/2 - 0.007, pY + 0.052, pZ)
-          box(0.014, 0.09, dM*0.19, pipingMat2, px - pW/2 + 0.007, pY + 0.052, pZ)
-        }
-
-        // ── Headboard (tall upholstered) ──
-        const headH    = hM * 0.60
-        const headThick= 0.115
-        box(wM + 0.05, headH, headThick, upholMat,
-          0, baseH + headH/2, -dM/2 + headThick/2 - 0.005)
-        // Headboard frame border
-        box(wM + 0.07, headH + 0.015, 0.015, darkFrame,
-          0, baseH + headH/2, -dM/2 + headThick + 0.007)
-        box(0.015, headH + 0.015, headThick + 0.01, darkFrame,
-           (wM + 0.07)/2, baseH + headH/2, -dM/2 + headThick/2)
-        box(0.015, headH + 0.015, headThick + 0.01, darkFrame,
-          -(wM + 0.07)/2, baseH + headH/2, -dM/2 + headThick/2)
-        // Headboard top rail
-        box(wM + 0.07, 0.03, headThick + 0.01, darkFrame,
-          0, baseH + headH + 0.015, -dM/2 + headThick/2)
-        // Tufting buttons (grid pattern)
-        const tuftMat2 = mkStd({ color: col.clone().multiplyScalar(0.42), roughness: 0.88 })
-        const tRows = 3, tCols = Math.max(2, Math.round(wM / 0.42))
-        for (let tr = 0; tr < tRows; tr++) {
-          for (let tc = 0; tc < tCols; tc++) {
-            const tx = -wM*0.38 + tc*(wM*0.76/(tCols-1||1))
-            const ty = baseH + headH*0.28 + tr*(headH*0.36/(tRows-1||1))
-            sph(0.020, tuftMat2, tx, ty, -dM/2 + headThick + 0.012)
-          }
-        }
-        // Tufting piping lines (horizontal channels)
-        for (let tr = 1; tr < tRows; tr++) {
-          const ty = baseH + headH*0.28 + tr*(headH*0.36/(tRows-1||1)) - headH*0.09
-          box(wM*0.82, 0.012, 0.012, pipingMat2, 0, ty, -dM/2 + headThick*0.6)
-        }
-
-        // ── Footboard ──
-        const footH = hM * 0.22
-        box(wM + 0.05, footH, 0.075, frameMat, 0, baseH + footH/2, dM/2 - 0.04)
-        // Footboard top cap
-        box(wM + 0.07, 0.022, 0.085, darkFrame, 0, baseH + footH + 0.011, dM/2 - 0.04)
-      }
-      break
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    case 'Storage': {
-      const bodyMat = mkWood('#c0956a', 0.72)
-      const darkWood = mkWood('#7a5028', 0.82)
-      const backMat = mkWood('#d4aa78', 0.88)
-
-      // Carcass
-      const panels = [
-        [0.022, hM, dM, -wM / 2 + 0.011, hM / 2, 0],
-        [0.022, hM, dM, wM / 2 - 0.011, hM / 2, 0],
-        [wM - 0.04, 0.022, dM, 0, hM - 0.011, 0],
-        [wM - 0.04, 0.022, dM, 0, 0.011, 0],
-        [wM - 0.04, hM - 0.04, 0.012, 0, hM / 2, -dM / 2 + 0.006],
-      ]
-      for (const [w, h, d, x, y, z] of panels)
-        box(w, h, d, bodyMat, x, y, z)
-
-      // Toe kick
-      box(wM, 0.07, dM, mkStd({ color: 0x111111, roughness: 0.9 }), 0, 0.035, 0)
-      // Crown
-      box(wM + 0.015, 0.05, dM + 0.015, darkWood, 0, hM + 0.025, 0)
-
-      // Doors or open shelves
-      const numDoors = Math.max(1, Math.round(wM / 0.45))
-      const dW = (wM - 0.04) / numDoors
-      for (let i = 0; i < numDoors; i++) {
-        const dx = -wM / 2 + 0.02 + dW / 2 + i * dW
-        box(dW - 0.01, hM - 0.1, 0.018, bodyMat, dx, hM / 2 + 0.01, dM / 2 + 0.009)
-        // Inset panel
-        box(dW - 0.07, hM * 0.55, 0.008, backMat, dx, hM / 2 + 0.02, dM / 2 + 0.02)
-        // Handle
-        cyl(0.007, 0.007, 0.055, 8, chromeMat, dx, hM * 0.52, dM / 2 + 0.028, 0, 0, Math.PI / 2)
-      }
-
-      // Interior shelves
-      const nShelves = Math.max(2, Math.round(hM / 0.3))
-      for (let i = 1; i < nShelves; i++) {
-        const sy = i * (hM / nShelves)
-        box(wM - 0.05, 0.02, dM - 0.04, mkWood('#d4aa78'), 0, sy, 0)
-      }
-      break
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    case 'Office': {
-      const deskMat = mkWood('#b8906a', 0.68)
-      const darkWood = mkWood('#6a3e18', 0.82)
-      const panelMat = mkStd({ color: 0x111122, roughness: 0.15, metalness: 0.4 })
-      const screenMat = mkStd({ color: 0x030310, roughness: 0.02, emissive: new T.Color(0.02, 0.055, 0.22), emissiveIntensity: 1.4, metalness: 0.45 })
-      const screenGlow = mkStd({ color: 0x1a2a88, roughness: 0.04, emissive: new T.Color(0.06, 0.14, 0.55), emissiveIntensity: 1.0, transparent: true, opacity: 0.55 })
-      const kbMat = mkStd({ color: 0x202020, roughness: 0.5, metalness: 0.15 })
-
-      // Desk surface + lip
-      box(wM, 0.04, dM, deskMat, 0, hM, 0)
-      box(wM + 0.02, 0.018, 0.018, darkWood, 0, hM + 0.009, -dM / 2 - 0.009)
-      box(wM + 0.02, 0.018, 0.018, darkWood, 0, hM + 0.009, dM / 2 + 0.009)
-      // Modesty panel (back)
-      box(wM, hM - 0.05, 0.02, darkWood, 0, (hM - 0.05) / 2, -dM / 2 + 0.01)
-
-      // Legs
-      for (const [sx, sz] of [[-1, -1], [-1, 1], [1, -1], [1, 1]])
-        box(0.055, hM - 0.02, 0.055, darkWood, sx * (wM / 2 - 0.04), (hM - 0.02) / 2, sz * (dM / 2 - 0.04))
-
-      // Dual monitor setup for wider desks
-      const numScreens = wM > 1.4 ? 2 : 1
-      const screenW = Math.min(wM * 0.44, 0.55)
-      const screenH = 0.3
-      const screenOffsets = numScreens === 2 ? [-wM * 0.22, wM * 0.22] : [0]
-      for (const sox of screenOffsets) {
-        // Monitor bezel
-        box(screenW, screenH + 0.02, 0.035, panelMat, sox, hM + 0.02 + screenH / 2 + 0.14, -dM * 0.3)
-        // Screen
-        box(screenW - 0.04, screenH, 0.01, screenMat, sox, hM + 0.02 + screenH / 2 + 0.14, -dM * 0.3 + 0.018)
-        // Stand neck
-        box(0.04, 0.14, 0.04, panelMat, sox, hM + 0.07, -dM * 0.3)
-        // Stand base
-        box(screenW * 0.55, 0.02, 0.16, panelMat, sox, hM + 0.01, -dM * 0.3 + 0.04)
-        // Screen ambient glow spill on desk surface
-          box(screenW * 0.7, 0.004, dM * 0.28, screenGlow, sox, hM + 0.002, -dM * 0.22)
-      }
-
-      // Keyboard
-      box(wM * 0.38, 0.014, dM * 0.18, kbMat, 0, hM + 0.007, dM * 0.12)
-      // Mouse
-      box(0.065, 0.025, 0.12, kbMat, wM * 0.22, hM + 0.012, dM * 0.12)
-      // Mouse pad
-      box(0.24, 0.004, 0.2, mkStd({ color: 0x333333, roughness: 0.98 }), wM * 0.21, hM + 0.002, dM * 0.1)
-      // Cable management box
-      box(0.12, 0.06, 0.08, mkStd({ color: 0x111111, roughness: 0.85 }), -wM * 0.42, hM - 0.03, dM * 0.3)
-      break
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    case 'Lighting': {
-      const poleMat = mkMetal(0xddddcc, 0.15, 0.92)
-      const brassMat = mkMetal(0xc8a840, 0.2, 0.8)
-      const shdMat = mkStd({
-        color: 0xfff0cc, roughness: 0.55, transparent: true, opacity: 0.88,
-        emissive: new T.Color(0.5, 0.35, 0.08), emissiveIntensity: 0.7,
-        side: T.DoubleSide,
-      })
-      const bulbMat = mkStd({
-        color: 0xffffee, roughness: 0.3,
-        emissive: new T.Color(1.0, 0.9, 0.4), emissiveIntensity: 1.8,
-      })
-
-      if (name.includes('floor') || name.includes('lamp')) {
-        // Floor lamp: weighted base, slender pole, angled shade
-        cyl(0.16, 0.2, 0.025, 24, brassMat, 0, 0.012, 0)           // base disc
-        cyl(0.05, 0.05, 0.04, 16, brassMat, 0, 0.05, 0)             // base column
-        cyl(0.018, 0.018, hM * 0.82, 12, poleMat, 0, hM * 0.41, 0)  // pole
-        cyl(0.014, 0.014, 0.04, 12, brassMat, 0, hM * 0.84, 0)      // shade connector
-        // Shade (conical: wide at bottom)
-        cyl(Math.min(wM * 0.38, 0.22), 0.05, Math.min(dM * 0.35, 0.2), 24, shdMat, 0, hM - 0.1, 0)
-        // Bulb
-        sph(0.04, bulbMat, 0, hM - 0.04, 0)
-        // Top finial
-        sph(0.022, brassMat, 0, hM + 0.04, 0)
-      } else if (name.includes('pendant') || name.includes('hanging') || name.includes('chandelier')) {
-        cyl(0.008, 0.008, hM * 0.45, 8, poleMat, 0, hM * 0.77, 0)   // cord
-        cyl(0.06, 0.14, 0.18, 20, shdMat, 0, hM - 0.09, 0)           // bell shade
-        sph(0.035, bulbMat, 0, hM - 0.06, 0)
-      } else {
-        // Table lamp
-        cyl(wM * 0.2, wM * 0.22, 0.025, 20, brassMat, 0, 0.012, 0)   // base
-        cyl(0.05, 0.08, hM * 0.32, 14, brassMat, 0, hM * 0.16, 0)    // body
-        cyl(0.014, 0.014, hM * 0.22, 12, poleMat, 0, hM * 0.43, 0)   // neck
-        cyl(Math.min(wM * 0.36, 0.2), 0.04, Math.min(hM * 0.3, 0.22), 20, shdMat, 0, hM - 0.14, 0)  // shade
-        sph(0.038, bulbMat, 0, hM - 0.1, 0)
-      }
-      break
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    case 'Bathroom': {
-      const porcelain = mkCeramic(0xf4f8fc)
-      const innerWater = mkGlass(0x88ccee, 0.65)
-      const chrome = chromeMat
-
-      if (name.includes('toilet')) {
-        // Cistern (tank)
-        const tz = -dM / 2 + dM * 0.22
-        box(wM * 0.72, hM * 0.62, dM * 0.3, porcelain, 0, hM * 0.31 + hM * 0.04, tz)
-        // Cistern lid
-        box(wM * 0.72 + 0.01, 0.02, dM * 0.3 + 0.01, mkStd({ color: 0xecf3fa, roughness: 0.06 }), 0, hM * 0.62 + 0.01, tz)
-        // Flush button
-        cyl(0.025, 0.025, 0.015, 12, chrome, 0, hM * 0.62 + 0.022, tz)
-        // Pedestal
-        cyl(wM * 0.26, wM * 0.3, hM * 0.42, 22, porcelain, 0, hM * 0.21, dM * 0.1)
-        // Bowl (oval)
-        box(wM * 0.76, 0.04, dM * 0.58, porcelain, 0, hM * 0.42, dM * 0.08)
-        // Inner bowl
-        addMesh(new T.CylinderGeometry(wM * 0.28, wM * 0.22, hM * 0.14, 24), innerWater, 0, hM * 0.35, dM * 0.08)
-        // Seat (hinged ring)
-        box(wM * 0.72, 0.025, dM * 0.56, mkStd({ color: 0xffffff, roughness: 0.12 }), 0, hM * 0.44 + 0.012, dM * 0.08)
-
-      } else if (name.includes('bathtub')) {
-        const rimMat = mkCeramic(0xeef2f8)
-        // Outer shell (tapered at ends)
-        box(wM, hM * 0.52, dM, rimMat, 0, hM * 0.26, 0)
-        // Rim lip
-        box(wM + 0.02, 0.04, dM + 0.02, rimMat, 0, hM * 0.52 + 0.02, 0)
-        // Inner basin
-        box(wM - 0.14, hM * 0.38, dM - 0.12, innerWater, 0, hM * 0.42, 0)
-        // Feet (4 ball feet)
-        for (const [sx, sz] of [[-1, -1], [-1, 1], [1, -1], [1, 1]])
-          sph(0.055, chrome, sx * (wM / 2 - 0.1), 0.055, sz * (dM / 2 - 0.1))
-        // Faucet assembly
-        cyl(0.022, 0.022, 0.14, 10, chrome, -wM * 0.38, hM * 0.62, -dM * 0.42, Math.PI * 0.15, 0, 0)
-        cyl(0.018, 0.018, 0.09, 10, chrome, -wM * 0.38 + 0.05, hM * 0.55, -dM * 0.42)
-        // Drain
-        cyl(0.03, 0.03, 0.01, 14, chrome, 0, hM * 0.04, 0)
-
-      } else {
-        // Sink/basin
-        const sinkRim = mkCeramic(0xf0f5fc)
-        box(wM, hM * 0.26, dM, sinkRim, 0, hM * 0.13, 0)  // cabinet base
-        // Countertop
-        box(wM + 0.01, 0.03, dM + 0.01, sinkRim, 0, hM * 0.26 + 0.015, 0)
-        // Basin recess
-        box(wM * 0.62, 0.02, dM * 0.65, innerWater, 0, hM * 0.26 + 0.03, -dM * 0.04)
-        // Faucet
-        cyl(0.02, 0.02, 0.14, 10, chrome, 0, hM * 0.28 + 0.07, -dM * 0.3, -Math.PI * 0.1, 0, 0)
-        cyl(0.018, 0.018, 0.04, 10, chrome, 0, hM * 0.28 + 0.07, -dM * 0.3)
-        // Handles
-        for (const sx of [-1, 1])
-          cyl(0.016, 0.016, 0.07, 10, chrome, sx * 0.075, hM * 0.28 + 0.05, -dM * 0.3)
-      }
-      break
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    case 'Kitchen': {
-      if (name.includes('fridge') || name.includes('refrigerator')) {
-        const appMat = mkStd({ color: 0xecece8, roughness: 0.28, metalness: 0.55 })
-        const darkMat = mkStd({ color: 0x2a2a2a, roughness: 0.4, metalness: 0.6 })
-
-        // Body
-        box(wM, hM, dM, appMat, 0, hM / 2, 0)
-        // Door gap line (freezer/fridge split ~35% from top)
-        box(wM + 0.001, 0.008, dM / 2 + 0.001, darkMat, 0, hM * 0.65, dM / 2 + 0.004)
-        // Freezer door panel
-        box(wM - 0.02, hM * 0.34, 0.012, mkStd({ color: 0xe8e8e4, roughness: 0.25, metalness: 0.5 }), 0, hM * 0.83, dM / 2 + 0.006)
-        // Main door panel
-        box(wM - 0.02, hM * 0.6, 0.012, mkStd({ color: 0xeaeae6, roughness: 0.22, metalness: 0.52 }), 0, hM * 0.32, dM / 2 + 0.006)
-        // Handles (bar style)
-        box(0.025, hM * 0.28, 0.04, chromeMat, -wM * 0.38, hM * 0.82, dM / 2 + 0.024)
-        box(0.025, hM * 0.22, 0.04, chromeMat, -wM * 0.38, hM * 0.3, dM / 2 + 0.024)
-        // Hinge details
-        for (const hy of [hM * 0.08, hM * 0.96])
-          box(0.04, 0.025, 0.04, darkMat, wM / 2 - 0.025, hy, dM / 2 + 0.004)
-        // Ventilation grille (bottom front)
-        box(wM * 0.8, 0.06, 0.01, darkMat, 0, 0.03, dM / 2 + 0.001)
-
-      } else if (name.includes('stove') || name.includes('cooktop') || name.includes('oven')) {
-        const bodyMat = mkStd({ color: 0x2a2a2a, roughness: 0.3, metalness: 0.55 })
-        const grillMat = mkMetal(0x111111, 0.7, 0.4)
-        const knobMat = mkStd({ color: 0x181818, roughness: 0.4, metalness: 0.5 })
-
-        // Oven body
-        box(wM, hM * 0.88, dM, bodyMat, 0, hM * 0.44, 0)
-        // Cooktop surface
-        box(wM + 0.01, 0.025, dM + 0.01, mkStd({ color: 0x1a1a1a, roughness: 0.25, metalness: 0.6 }), 0, hM * 0.9, 0)
-        // Oven door
-        box(wM - 0.06, hM * 0.44, 0.02, mkStd({ color: 0x222222, roughness: 0.2, metalness: 0.55 }), 0, hM * 0.24, dM / 2 + 0.01)
-        // Oven window
-        box(wM * 0.55, hM * 0.22, 0.01, mkGlass(0x332211, 0.55), 0, hM * 0.26, dM / 2 + 0.016)
-        // Door handle
-        box(wM * 0.6, 0.028, 0.04, chromeMat, 0, hM * 0.44, dM / 2 + 0.024)
-        // Burners (4) with grates
-        const bPos = [[-wM * 0.26, -dM * 0.2], [wM * 0.26, -dM * 0.2], [-wM * 0.26, dM * 0.15], [wM * 0.26, dM * 0.15]]
-        for (const [bx, bz] of bPos) {
-          cyl(wM * 0.14, wM * 0.14, 0.012, 24, grillMat, bx, hM * 0.92, bz)  // outer ring
-          cyl(wM * 0.05, wM * 0.05, 0.016, 16, mkStd({ color: 0x090909, roughness: 0.9 }), bx, hM * 0.924, bz) // center
-          // Grate spokes (4 per burner)
-          for (let a = 0; a < 4; a++) {
-            const gr = new T.Mesh(new T.BoxGeometry(wM * 0.22, 0.01, 0.015), grillMat)
-            gr.position.set(bx, hM * 0.935, bz)
-            gr.rotation.y = a * Math.PI / 4
-            gr.castShadow = true; group.add(gr)
-          }
-        }
-        // Control knobs (front)
-        for (let i = 0; i < 4; i++)
-          cyl(0.022, 0.028, 0.035, 14, knobMat, -wM * 0.38 + i * (wM * 0.26), hM * 0.86, dM / 2 + 0.014)
-
-      } else {
-        // Counter / sink
-        const counterMat = mkStd({ map: metalTex(T), roughness: 0.32, metalness: 0.65 })
-        const cabinetMat = mkWood('#b87c52', 0.72)
-        box(wM, hM * 0.88, dM, cabinetMat, 0, hM * 0.44, 0)
-        box(wM + 0.01, 0.04, dM + 0.01, counterMat, 0, hM * 0.9, 0)
-        box(wM - 0.02, 0.01, 0.02, mkStd({ color: 0x111111, roughness: 0.9 }), 0, hM * 0.88, dM / 2 + 0.002)
-        if (name.includes('sink')) {
-          box(wM * 0.55, 0.025, dM * 0.58, new T.MeshStandardMaterial({ color: 0x999990, roughness: 0.12, metalness: 0.75 }), 0, hM * 0.9 + 0.012, 0)
-          cyl(0.024, 0.024, 0.16, 10, chromeMat, 0, hM * 0.96 + 0.08, -dM * 0.18, -Math.PI * 0.12, 0, 0)
-          for (const sx of [-1, 1])
-            cyl(0.014, 0.014, 0.05, 10, chromeMat, sx * 0.07, hM * 0.96 + 0.04, -dM * 0.18)
-        }
-      }
-      break
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    case 'Living Room': {
-      if (name.includes('tv') || name.includes('television')) {
-        const frameMat = mkStd({ color: 0x0a0a12, roughness: 0.15, metalness: 0.5 })
-        const scrMat = mkStd({ color: 0x040408, roughness: 0.02, metalness: 0.3, emissive: new T.Color(0.02, 0.04, 0.12), emissiveIntensity: 0.6 })
-        const standMat = mkStd({ color: 0x111111, roughness: 0.4, metalness: 0.65 })
-
-        // Outer bezel (thin)
-        box(wM, hM, dM, frameMat, 0, hM / 2, 0)
-        // Screen surface
-        box(wM - 0.025, hM - 0.022, 0.008, scrMat, 0, hM / 2, dM / 2 + 0.004)
-        // Ultra-thin back protrusion (electronics bulge)
-        box(wM * 0.55, hM * 0.6, dM * 0.6, mkStd({ color: 0x151515, roughness: 0.6, metalness: 0.4 }), 0, hM / 2, -dM * 0.15)
-        // Power light
-        sph(0.008, mkStd({ color: 0x00aaff, emissive: new T.Color(0, 0.5, 1), emissiveIntensity: 2, roughness: 0.3 }), wM * 0.44, 0.022, dM / 2 + 0.005)
-        // Stand neck
-        box(wM * 0.1, hM * 0.3, dM * 0.25, standMat, 0, -hM * 0.15, dM * 0.1)
-        // Stand base
-        box(wM * 0.52, 0.02, dM * 0.65, standMat, 0, -hM * 0.3, dM * 0.15)
-
-      } else if (name.includes('rug')) {
-        const rugTex = fabricTex(T, hexColor); rugTex.repeat.set(4, 4)
-        box(wM, 0.018, dM, mkStd({ map: rugTex, roughness: 0.98 }), 0, 0.009, 0)
-        // Rug border (slightly raised, different color)
-        const borderColor = col.clone().multiplyScalar(0.7)
-        for (const [bw, bh, bd, bx, bz] of [
-          [wM, 0.022, 0.04, 0, -dM / 2 + 0.02],
-          [wM, 0.022, 0.04, 0, dM / 2 - 0.02],
-          [0.04, 0.022, dM, -wM / 2 + 0.02, 0],
-          [0.04, 0.022, dM, wM / 2 - 0.02, 0],
-        ]) box(bw, bh, bd, mkStd({ color: borderColor, roughness: 0.98 }), bx, 0.011, bz)
-
-      } else if (name.includes('fireplace')) {
-        const stoneMat = mkStd({ color: 0x88887a, roughness: 0.92 })
-        const brickMat = mkStd({ color: 0x9a5535, roughness: 0.96 })
-        const fireMat = mkStd({ color: 0xff6600, emissive: new T.Color(1, 0.3, 0), emissiveIntensity: 1.5, roughness: 0.8 })
-
-        box(wM, hM, dM, stoneMat, 0, hM / 2, 0)
-        // Firebox opening
-        box(wM * 0.62, hM * 0.55, dM * 0.12, brickMat, 0, hM * 0.3, dM / 2 + 0.006)
-        // Inner firebox (dark)
-        box(wM * 0.58, hM * 0.5, dM * 0.28, mkStd({ color: 0x0a0804, roughness: 0.97 }), 0, hM * 0.28, dM * 0.18)
-        // Fire glow
-        box(wM * 0.28, hM * 0.12, 0.04, fireMat, 0, hM * 0.1, dM * 0.32)
-        // Mantel shelf
-        box(wM + 0.08, 0.06, dM * 0.5 + 0.1, mkStd({ map: woodTex(T), roughness: 0.65 }), 0, hM + 0.03, -dM * 0.05)
-        // Corbels (mantel supports)
-        for (const sx of [-1, 1])
-          box(0.05, hM * 0.12, dM * 0.2, stoneMat, sx * (wM * 0.46), hM + 0.03 - hM * 0.06, -dM * 0.05)
-        // Hearth slab
-        box(wM + 0.08, 0.03, dM * 0.18, stoneMat, 0, 0.015, dM / 2 + 0.04)
-
-      } else {
-        box(wM, hM, dM, mkPaint(col, 0.7), 0, hM / 2, 0)
-      }
-      break
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    case 'Decor': {
-      if (name.includes('plant')) {
-        const potMat = mkStd({ color: 0xac7348, roughness: 0.88 })
-        const soilMat = mkStd({ color: 0x2a1a0a, roughness: 0.98 })
-        const leafMat = mkStd({ color: 0x1e6b28, roughness: 0.9, side: T.DoubleSide })
-        const stemMat = mkStd({ color: 0x2a5012, roughness: 0.92 })
-
-        const potR = Math.min(wM, dM) * 0.38
-        const potH = hM * 0.38
-        // Pot (tapered)
-        cyl(potR, potR * 0.78, potH, 18, potMat, 0, potH / 2, 0)
-        // Rim
-        cyl(potR + 0.02, potR + 0.02, 0.025, 18, potMat, 0, potH + 0.012, 0)
-        // Soil
-        cyl(potR - 0.01, potR - 0.01, 0.02, 18, soilMat, 0, potH + 0.01, 0)
-        // Main stem
-        cyl(0.018, 0.022, hM * 0.35, 8, stemMat, 0, potH + hM * 0.175, 0)
-        // Leaves (asymmetric, multiple)
-        const leafDefs = [[0, 0, 0], [0.7, 0.15, 0.2], [-0.6, 0.2, -0.1], [0.4, -0.1, 0.25], [-0.3, 0.3, -0.2]]
-        for (const [la, ly, lz] of leafDefs) {
-          const lf = new T.Mesh(new T.SphereGeometry(Math.min(wM, dM) * 0.28, 8, 5), leafMat)
-          lf.position.set(la * wM * 0.22, potH + hM * 0.3 + ly * hM * 0.18, lz * dM * 0.22)
-          lf.scale.set(1.2, 0.32, 0.75); lf.castShadow = true; group.add(lf)
-        }
-      } else {
-        box(wM, hM, dM, mkPaint(col, 0.75), 0, hM / 2, 0)
-      }
-      break
-    }
-
-    default:
-      box(wM, hM, dM, mkPaint(col, 0.7), 0, hM / 2, 0)
-  }
-
-  return group
-}
-
-function parseOBJ(T, text) {
-  const verts = [], uvArr = [], normArr = [], posOut = [], uvOut = [], normOut = []
-  for (const raw of text.split('\n')) {
-    const p = raw.trim().split(/\s+/)
-    if (p[0] === 'v') verts.push(p.slice(1).map(Number))
-    if (p[0] === 'vt') uvArr.push(p.slice(1).map(Number))
-    if (p[0] === 'vn') normArr.push(p.slice(1).map(Number))
-    if (p[0] === 'f') {
-      const fvs = p.slice(1).map(s => { const i = s.split('/').map(n => n ? parseInt(n) - 1 : undefined); return { v: i[0], t: i[1], n: i[2] } })
-      for (let i = 1; i < fvs.length - 1; i++) {
-        for (const fv of [fvs[0], fvs[i], fvs[i + 1]]) {
-          posOut.push(...(verts[fv.v] || [0, 0, 0]))
-          uvOut.push(...(fv.t != null && uvArr[fv.t] ? uvArr[fv.t] : [0, 0]))
-          normOut.push(...(fv.n != null && normArr[fv.n] ? normArr[fv.n] : [0, 1, 0]))
-        }
-      }
-    }
-  }
-  const geo = new T.BufferGeometry()
-  geo.setAttribute('position', new T.Float32BufferAttribute(posOut, 3))
-  geo.setAttribute('uv', new T.Float32BufferAttribute(uvOut, 2))
-  geo.setAttribute('normal', new T.Float32BufferAttribute(normOut, 3))
-  if (!normOut.length || normOut.every(v => v === 0)) geo.computeVertexNormals()
-  return geo
-}
-
-async function parseGLB(T, buffer) {
-  const view = new DataView(buffer)
-  if (view.getUint32(0, true) !== 0x46546C67) throw new Error('Not a valid GLB file')
-  const jsonLen = view.getUint32(12, true)
-  const jsonStart = 20
-  const jsonText = new TextDecoder().decode(new Uint8Array(buffer, jsonStart, jsonLen))
-  const gltf = JSON.parse(jsonText)
-  let binChunk = null
-  let imgChunk = null  // for embedded textures
-  let off = jsonStart + jsonLen
-  while (off + 8 <= buffer.byteLength) {
-    const chunkLen = view.getUint32(off, true)
-    const chunkType = view.getUint32(off + 4, true)
-    if (chunkType === 0x004E4942) binChunk = buffer.slice(off + 8, off + 8 + chunkLen)
-    off += 8 + chunkLen
-  }
-  if (!binChunk) throw new Error('Missing GLB binary chunk')
-
-  const getAcc = idx => {
-    const acc = gltf.accessors[idx]
-    const bv = gltf.bufferViews[acc.bufferView]
-    const byteOffset = (bv.byteOffset || 0) + (acc.byteOffset || 0)
-    const count = acc.count || 0
-    const sz = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT4: 16 }[acc.type] || 1
-    return new Float32Array(binChunk, byteOffset, count * sz)
-  }
-  const getIdx = idx => {
-    const acc = gltf.accessors[idx]
-    const bv = gltf.bufferViews[acc.bufferView]
-    const byteOffset = (bv.byteOffset || 0) + (acc.byteOffset || 0)
-    const count = acc.count || 0
-    return acc.componentType === 5125 ? new Uint32Array(binChunk, byteOffset, count) : new Uint16Array(binChunk, byteOffset, count)
-  }
-
-  // Build Three.js textures from embedded GLTF images
-  const texCache = {}
-  const getTexture = (texIdx) => {
-    if (texIdx == null) return null
-    if (texCache[texIdx]) return texCache[texIdx]
-    try {
-      const texDef = gltf.textures?.[texIdx]
-      if (!texDef) return null
-      const imgDef = gltf.images?.[texDef.source]
-      if (!imgDef) return null
-      let imgData
-      if (imgDef.bufferView != null) {
-        const bv = gltf.bufferViews[imgDef.bufferView]
-        imgData = new Uint8Array(binChunk, bv.byteOffset || 0, bv.byteLength)
-      } else return null
-      const mimeType = imgDef.mimeType || 'image/png'
-      const blob = new Blob([imgData], { type: mimeType })
-      const url = URL.createObjectURL(blob)
-      const tex = new T.TextureLoader().load(url, () => URL.revokeObjectURL(url))
-      tex.flipY = false  // GLTF uses top-left origin
-      tex.wrapS = tex.wrapT = T.RepeatWrapping
-      texCache[texIdx] = tex
-      return tex
-    } catch { return null }
-  }
-
-  // Build material from GLTF pbrMetallicRoughness
-  const buildMat = (matIdx) => {
-    const matDef = gltf.materials?.[matIdx]
-    if (!matDef) return new T.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.7 })
-    const pbr = matDef.pbrMetallicRoughness || {}
-    const baseColor = pbr.baseColorFactor || [1, 1, 1, 1]
-    const mat = new T.MeshStandardMaterial({
-      color: new T.Color(baseColor[0], baseColor[1], baseColor[2]),
-      opacity: baseColor[3] ?? 1,
-      transparent: (baseColor[3] ?? 1) < 1,
-      roughness: pbr.roughnessFactor ?? 0.7,
-      metalness: pbr.metallicFactor ?? 0,
-      side: matDef.doubleSided ? T.DoubleSide : T.FrontSide,
-    })
-    // Base color texture
-    const bcTex = pbr.baseColorTexture?.index != null ? getTexture(pbr.baseColorTexture.index) : null
-    if (bcTex) mat.map = bcTex
-    // Normal map
-    const nmTex = matDef.normalTexture?.index != null ? getTexture(matDef.normalTexture.index) : null
-    if (nmTex) mat.normalMap = nmTex
-    // Metallic-roughness texture
-    const mrTex = pbr.metallicRoughnessTexture?.index != null ? getTexture(pbr.metallicRoughnessTexture.index) : null
-    if (mrTex) { mat.metalnessMap = mrTex; mat.roughnessMap = mrTex }
-    // Emissive
-    if (matDef.emissiveFactor) {
-      const [er, eg, eb] = matDef.emissiveFactor
-      if (er > 0 || eg > 0 || eb > 0) mat.emissive = new T.Color(er, eg, eb)
-    }
-    return mat
-  }
-
-  const group = new T.Group()
-  for (const mesh of (gltf.meshes || [])) {
-    for (const prim of (mesh.primitives || [])) {
-      const geo = new T.BufferGeometry(); const at = prim.attributes || {}
-      if (at.POSITION != null) geo.setAttribute('position', new T.Float32BufferAttribute(getAcc(at.POSITION), 3))
-      if (at.NORMAL != null) geo.setAttribute('normal', new T.Float32BufferAttribute(getAcc(at.NORMAL), 3))
-      if (at.TEXCOORD_0 != null) geo.setAttribute('uv', new T.Float32BufferAttribute(getAcc(at.TEXCOORD_0), 2))
-      if (at.COLOR_0 != null) geo.setAttribute('color', new T.Float32BufferAttribute(getAcc(at.COLOR_0), 4))
-      if (prim.indices != null) geo.setIndex(new T.BufferAttribute(getIdx(prim.indices), 1))
-      if (!geo.getAttribute('normal')) geo.computeVertexNormals()
-      // ← Use real material instead of hardcoded grey
-      const mat = buildMat(prim.material)
-      if (geo.getAttribute('color')) mat.vertexColors = true
-      const m = new T.Mesh(geo, mat)
-      m.castShadow = true; m.receiveShadow = true; group.add(m)
-    }
-  }
-  return group
-}
-
-function b64ToBuffer(b64) {
-  const bin = atob(b64), buf = new ArrayBuffer(bin.length), u8 = new Uint8Array(buf)
+function base64ToArrayBuffer(b64) {
+  const bin = atob(b64)
+  const buf = new ArrayBuffer(bin.length)
+  const u8 = new Uint8Array(buf)
   for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
   return buf
 }
 
-function scaleModelToFit(T, group, wM, hM, dM) {
-  const box3 = new T.Box3().setFromObject(group)
-  const size = new T.Vector3(); box3.getSize(size)
-  const center = new T.Vector3(); box3.getCenter(center)
-  const min = box3.min
-  if (size.x > 0 && size.y > 0 && size.z > 0) {
-    const sx = wM / size.x
-    const sy = hM / size.y
-    const szf = dM / size.z
-    group.scale.set(sx, sy, szf)
-    // Keep X/Z centered, place bottom at floor Y=0.
-    group.position.set(-center.x * sx, -min.y * sy, -center.z * szf)
-  }
-}
-
-function itemTo3D(item) {
-  // item.x, item.y = top-left corner in 2D canvas pixels
-  // OX2D, OY2D = room origin offset in canvas pixels
-  // GRID2D = pixels per metre
-  // Result: 3D world position of the item's centre
-  const wM = item.widthM  || (item.w / GRID2D)
-  const dM = item.depthM  || (item.d / GRID2D)
-  const x3d = (item.x - OX2D) / GRID2D + wM / 2
-  const z3d = (item.y - OY2D) / GRID2D + dM / 2
-  return {
-    x: x3d,
-    z: z3d,
-    ry: -(item.rotation || 0) * Math.PI / 180,
-  }
-}
-
-// Reverse: 3D world centre → 2D canvas top-left corner
-function item3DTo2D(x3d, z3d, wM, dM) {
-  return {
-    x: Math.round((x3d - wM / 2) * GRID2D + OX2D),
-    y: Math.round((z3d - dM / 2) * GRID2D + OY2D),
-  }
-}
-
-function clamp(value, min, max) { return Math.min(max, Math.max(min, value)) }
-function clamp3DPosition(item, cfg, x3d, z3d) {
-  const wM = item.widthM || (item.w / GRID2D)
-  const dM = item.depthM || (item.d / GRID2D)
-  const dims = roomDims(cfg)
-  const minX = wM / 2
-  const minZ = dM / 2
-  const maxX = Math.max(minX, dims.W - wM / 2)
-  const maxZ = Math.max(minZ, dims.D - dM / 2)
-  return {
-    x: clamp(x3d, minX, maxX),
-    z: clamp(z3d, minZ, maxZ),
-  }
-}
-
-function applyOrbit(camera, o) {
-  if (!camera) return
-  camera.position.set(
-    o.tx + o.radius * Math.sin(o.phi) * Math.sin(o.theta),
-    o.ty + o.radius * Math.cos(o.phi),
-    o.tz + o.radius * Math.sin(o.phi) * Math.cos(o.theta),
-  )
-  camera.lookAt(o.tx, o.ty, o.tz)
-}
-
-export default function Workspace3D() {
-  const { id } = useParams()
-  const navigate = useNavigate()
-  const mountRef  = useRef(null)
-  const rdrRef    = useRef(null)
-  const sceneRef  = useRef(null)
-  const camRef    = useRef(null)
-  const frameRef  = useRef(null)
-  const fGroupRef = useRef(null)
-  const ovGroupRef = useRef(null)  // ← overlay group for doors/windows
-  const TRef      = useRef(null)
-  const orbitRef  = useRef({ theta: 0.7, phi: 0.62, radius: 8, tx: 2.5, ty: 1.4, tz: 2 })
-  const ptrRef    = useRef({ down: false, moved: false, x: 0, y: 0, button: 0 })
-  const dragFurnRef = useRef(null)
-  const dragRafRef = useRef(null)
-  const modelCacheRef = useRef(new Map()) // modelUrl -> Promise<THREE.Group>
-
-  // ── Shared design store — read live data from 2D workspace ──
-  const designStore = useDesignStore()
-
-  const [loading,     setLoading]     = useState(true)
-  const [project,     setProject]     = useState(null)
-  const [isEditingName, setIsEditingName] = useState(false)
-  const [nameDraft, setNameDraft] = useState('')
-  const [cfg,         setCfg]         = useState({})
-  const [items,       setItems]       = useState([])
-  const [overlays,    setOverlays]    = useState({ doors: [], windows: [], curtains: [] })
-  const [customModels,setCustomModels]= useState([])
-  const [dirty,       setDirty]       = useState(false)
-  const [saving,      setSaving]      = useState(false)
-  const [selectedId,  setSelectedId]  = useState(null)
-  const wallMode = designStore.wallMode || 'solid'
-  const setWallMode = designStore.setWallMode
-  const [showCeiling, setShowCeiling] = useState(false)
-  const [showShadows, setShowShadows] = useState(true)
-  const [showGrid,    setShowGrid]    = useState(false)
-  const [ambientInt,  setAmbientInt]  = useState(0.6)
-  const [sunInt,      setSunInt]      = useState(1.1)
-  // Rendering quality is fixed to "best" (no dropdown)
-  const cfgRef      = useRef(cfg);         useEffect(() => { cfgRef.current = cfg }, [cfg])
-  const itemsRef    = useRef(items);       useEffect(() => { itemsRef.current = items }, [items])
-  const overlaysRef = useRef(overlays);    useEffect(() => { overlaysRef.current = overlays }, [overlays])
-  const wallModeRef = useRef(wallMode);    useEffect(() => { wallModeRef.current = wallMode }, [wallMode])
-  const ceilRef     = useRef(showCeiling); useEffect(() => { ceilRef.current = showCeiling }, [showCeiling])
-  const shadowRef   = useRef(showShadows); useEffect(() => { shadowRef.current = showShadows }, [showShadows])
-  const gridRef     = useRef(showGrid);    useEffect(() => { gridRef.current = showGrid }, [showGrid])
-  const selectedIdRef = useRef(selectedId); useEffect(() => { selectedIdRef.current = selectedId }, [selectedId])
-
-  // ── On mount: pull latest data from shared store (set by 2D workspace) ──
-  useEffect(() => {
-    designStore.syncFromStorage()
-  }, []) // eslint-disable-line
-
-  // If 2D and 3D are open in different tabs/windows, keep in sync in real time.
-  useEffect(() => {
-    const onStorage = (e) => {
-      if (!e?.key) return
-      if (e.key.startsWith('rc_design_')) designStore.syncFromStorage()
+/* ── OBJ top-down parser ── */
+function parseOBJTopDown(text) {
+  const verts = [], faces = []
+  for (const raw of text.split('\n')) {
+    const p = raw.trim().split(/\s+/)
+    if (p[0] === 'v' && p.length >= 4) {
+      const x = parseFloat(p[1]), y = parseFloat(p[2]), z = parseFloat(p[3])
+      if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z))
+        verts.push([x, y, z])
     }
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
-  }, []) // eslint-disable-line
-
-  // ── Keep local state in sync with shared store ──
-  useEffect(() => {
-    if (designStore.items.length > 0 || items.length === 0) setItems(designStore.items)
-  }, [designStore.items]) // eslint-disable-line
-  useEffect(() => {
-    setOverlays(designStore.overlays)
-  }, [designStore.overlays]) // eslint-disable-line
-  useEffect(() => {
-    if (designStore.cfg && Object.keys(designStore.cfg).length > 0) setCfg(designStore.cfg)
-  }, [designStore.cfg]) // eslint-disable-line
-  useEffect(() => {
-    setCustomModels(designStore.customModels || [])
-  }, [designStore.customModels]) // eslint-disable-line
-
-  useEffect(() => {
-    setLoading(true)
-    projectsApi.getById(id).then(p => {
-      setProject(p)
-      let c = {}, its = [], ov = { doors: [], windows: [], curtains: [] }
-      try { c = JSON.parse(p.roomConfig) } catch {}
-      try { const l = JSON.parse(p.furnitureLayout); if (l?.items) { its = l.items; ov = l.overlays || ov } else if (Array.isArray(l)) its = l } catch {}
-      setCfg(c); setItems(its); setOverlays(ov)
-    }).catch(() => { toast.error('Failed to load project'); navigate('/projects') }).finally(() => setLoading(false))
-  }, [id]) // eslint-disable-line
-
-  useEffect(() => {
-    if (loading || !mountRef.current) return
-    let alive = true
-    import('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js').then(T => {
-      if (!alive || !mountRef.current) return
-      TRef.current = T
-      const mount = mountRef.current
-      const W = mount.clientWidth || 900, H = mount.clientHeight || 600
-      const renderer = new T.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.5)); renderer.setSize(W, H)
-      renderer.shadowMap.enabled = true; renderer.shadowMap.type = T.PCFSoftShadowMap
-      renderer.toneMapping = T.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.35
-      renderer.outputEncoding = T.sRGBEncoding
-      renderer.physicallyCorrectLights = true
-      renderer.shadowMap.type = T.VSMShadowMap 
-      mount.appendChild(renderer.domElement); rdrRef.current = renderer
-      const scene = new T.Scene()
-      scene.background = new T.Color(0x16192e)
-      scene.fog = new T.Fog(0x16192e, 14, 38)  
-      sceneRef.current = scene
-      // High-end "studio" environment lighting for better realism on PBR materials.
-      import('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/environments/RoomEnvironment.js')
-        .then(({ RoomEnvironment }) => {
-          try {
-            const pmrem = new T.PMREMGenerator(renderer)
-            const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
-            scene.environment = envTex
-            pmrem.dispose()
-          } catch {}
-        })
-        .catch(() => {})
-      // Larger near plane + tighter far plane improves depth precision and reduces z-fighting flicker.
-      const dims0 = roomDims(cfgRef.current)
-      const far0 = Math.max(dims0.W, dims0.D) * 12
-      const camera = new T.PerspectiveCamera(52, W / H, 0.35, Math.max(40, Math.min(160, far0))); camRef.current = camera
-      const amb = new T.AmbientLight(0xffe8cc, ambientInt * 0.85); amb.name = 'ambient'; scene.add(amb)
-      // Primary sun — warm afternoon light
-      const sun = new T.DirectionalLight(0xfff0d0, sunInt * 1.1); sun.name = 'sun'
-      sun.position.set(8, 14, 5); sun.castShadow = true
-      sun.shadow.mapSize.set(4096, 4096)
-      sun.shadow.camera.near = 0.5
-      sun.shadow.camera.far = Math.max(30, Math.min(120, Math.max(dims0.W, dims0.D) * 8))
-      const shadowSize = Math.max(dims0.W, dims0.D) * 2.6
-      sun.shadow.camera.left = sun.shadow.camera.bottom = -shadowSize
-      sun.shadow.camera.right = sun.shadow.camera.top = shadowSize
-      sun.shadow.bias = -0.0008
-      sun.shadow.normalBias = 0.04
-      scene.add(sun)
-      // Cool sky fill from opposite side
-      const fill = new T.DirectionalLight(0xb0ccff, 0.42); fill.position.set(-6, 4, -4); scene.add(fill)
-      // Bounce light from floor (warm)
-      const bounce = new T.DirectionalLight(0xffddb0, 0.18); bounce.position.set(0, -1, 0); scene.add(bounce)
-      // Warm accent point (lamp-like)
-      const pt1 = new T.PointLight(0xffcc88, 0.9, 12); pt1.position.set(2, 2.6, 2); pt1.castShadow = false; scene.add(pt1)
-      // Cool hemisphere for ambient sky/ground contrast
-      const hemi = new T.HemisphereLight(0xd0e8ff, 0xffe0b0, 0.35); hemi.position.set(0, 8, 0); scene.add(hemi)
-      scene.add(buildRoom(T, cfgRef.current, { wallMode: wallModeRef.current, showCeiling: ceilRef.current, showShadows: shadowRef.current, showGrid: gridRef.current }))
-      const fGroup = new T.Group(); fGroup.name = 'furniture'; scene.add(fGroup); fGroupRef.current = fGroup
-      const ovGroup = new T.Group(); ovGroup.name = 'overlays'; scene.add(ovGroup); ovGroupRef.current = ovGroup
-      populateFurniture(T, fGroup, itemsRef.current, shadowRef.current)
-      populateOverlays(T, ovGroup, overlaysRef.current, cfgRef.current)
-      const dims = roomDims(cfgRef.current)
-      orbitRef.current = { theta: 0.7, phi: 0.62, radius: Math.max(dims.W, dims.D) * 1.7, tx: dims.W / 2, ty: dims.H * 0.5, tz: dims.D / 2 }
-      applyOrbit(camera, orbitRef.current)
-      const ro = new ResizeObserver(() => { const w = mount.clientWidth, h = mount.clientHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix() })
-      ro.observe(mount)
-      const loop = () => { if (!alive) return; frameRef.current = requestAnimationFrame(loop); renderer.render(scene, camera) }
-      loop()
-      return () => { alive = false; cancelAnimationFrame(frameRef.current); ro.disconnect(); if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement); renderer.dispose(); rdrRef.current = null; sceneRef.current = null; camRef.current = null }
-    })
-    return () => { alive = false }
-  }, [loading]) // eslint-disable-line
-
-  useEffect(() => {
-    const scene = sceneRef.current; if (!scene) return
-    const rdr = rdrRef.current
-    import('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js').then(T => {
-      // Toggle renderer shadow map
-      if (rdr) {
-        rdr.shadowMap.enabled = showShadows
-        rdr.shadowMap.needsUpdate = true
-      }
-      // Toggle sun shadow casting
-      const sun = scene.getObjectByName('sun')
-      if (sun) {
-        sun.castShadow = showShadows
-      }
-      // Toggle all mesh shadows in scene
-      scene.traverse(obj => {
-        if (obj.isMesh) {
-          obj.castShadow = showShadows
-          obj.receiveShadow = showShadows
-        }
+    if (p[0] === 'f' && p.length >= 4) {
+      const ids = p.slice(1).map(s => {
+        const n = parseInt(s.split('/')[0], 10)
+        return Number.isFinite(n) ? n - 1 : -1
       })
-      // Rebuild room geometry
-      const old = scene.getObjectByName('room'); if (old) scene.remove(old)
-      scene.add(buildRoom(T, cfg, { wallMode, showCeiling, showShadows, showGrid }))
-    })
-  }, [cfg, wallMode, showCeiling, showShadows, showGrid])
-
-  useEffect(() => {
-    const scene = sceneRef.current; if (!scene) return
-    const rdr = rdrRef.current
-    import('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js').then(T => {
-      // Toggle renderer shadow map
-      if (rdr) {
-        rdr.shadowMap.enabled = showShadows
-        rdr.shadowMap.needsUpdate = true
+      for (let i = 1; i < ids.length - 1; i++) {
+        if (ids[0] >= 0 && ids[i] >= 0 && ids[i+1] >= 0)
+          faces.push([ids[0], ids[i], ids[i+1]])
       }
-      // Toggle sun shadow casting
-      const sun = scene.getObjectByName('sun')
-      if (sun) {
-        sun.castShadow = showShadows
-      }
-      // Toggle all mesh shadows in scene
-      scene.traverse(obj => {
-        if (obj.isMesh) {
-          obj.castShadow = showShadows
-          obj.receiveShadow = showShadows
-        }
-      })
-      // Rebuild room geometry
-      const old = scene.getObjectByName('room'); if (old) scene.remove(old)
-      scene.add(buildRoom(T, cfg, { wallMode, showCeiling, showShadows, showGrid }))
-    })
-  }, [cfg, wallMode, showCeiling, showShadows, showGrid])
-
-  useEffect(() => {
-    const og = ovGroupRef.current; if (!og) return
-    import('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js').then(T => {
-      while (og.children.length) og.remove(og.children[0])
-      populateOverlays(T, og, overlays, cfg)
-    })
-  }, [overlays, cfg]) // eslint-disable-line
-
-  useEffect(() => {
-    const scene = sceneRef.current; if (!scene) return
-    const a = scene.getObjectByName('ambient'), s = scene.getObjectByName('sun')
-    if (a) a.intensity = ambientInt; if (s) s.intensity = sunInt
-  }, [ambientInt, sunInt])
-
-  async function loadModelFromUrl(T, url) {
-    if (!url) throw new Error('Missing modelUrl')
-    const cache = modelCacheRef.current
-    if (cache.has(url)) return cache.get(url)
-
-    const p = (async () => {
-      const ext = (url.split('?')[0].split('#')[0].split('.').pop() || '').toLowerCase()
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`Fetch failed (${res.status})`)
-      const buf = await res.arrayBuffer()
-
-      if (ext === 'obj') {
-        const text = new TextDecoder().decode(buf)
-        const geo = parseOBJ(T, text)
-        // NOTE: OBJ alone doesn't carry materials/textures reliably (needs .mtl + images).
-        // We keep a neutral material; to preserve "exact colors/textures", prefer GLB.
-        const mat = new T.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.75, metalness: 0.02 })
-        const m = new T.Mesh(geo, mat); m.castShadow = true; m.receiveShadow = true
-        const g = new T.Group(); g.add(m)
-        return g
-      }
-
-      // Default to GLB parser (also covers ext-less /files/{uuid})
-      return await parseGLB(T, buf)
-    })()
-
-    cache.set(url, p)
-    return p
+    }
   }
+  return { pts2d: verts.map(([x,,z]) => [x, z]), faces }
+}
 
-  async function populateFurniture(T, group, its, showShadows = true) {
-    for (const item of its) {
-      if (item.x == null || item.y == null) continue
-      let mesh
-      if (item.modelUrl && typeof item.modelUrl === 'string') {
-        try {
-          const base = await loadModelFromUrl(T, item.modelUrl)
-          mesh = base.clone(true)
-        } catch (err) {
-          console.warn('ModelUrl load failed, using fallback:', err)
-          mesh = buildFurnitureMesh(T, item)
+function parseGLBTopDown(buffer) {
+  try {
+    const view = new DataView(buffer)
+    if (view.getUint32(0, true) !== 0x46546C67) return null
+    const jsonLen   = view.getUint32(12, true)
+    const jsonStart = 20
+    const jsonText  = new TextDecoder().decode(new Uint8Array(buffer, jsonStart, jsonLen))
+    const gltf = JSON.parse(jsonText)
+    let binChunk = null, offset = jsonStart + jsonLen
+    while (offset + 8 <= buffer.byteLength) {
+      const chunkLen  = view.getUint32(offset, true)
+      const chunkType = view.getUint32(offset + 4, true)
+      const chunkData = buffer.slice(offset + 8, offset + 8 + chunkLen)
+      if (chunkType === 0x004E4942) { binChunk = chunkData; break }
+      offset += 8 + chunkLen
+    }
+    if (!binChunk) return null
+    const pts2d = [], faces = []
+    let vertexStart = 0
+    for (const mesh of (gltf.meshes || [])) {
+      for (const prim of (mesh.primitives || [])) {
+        const at = prim.attributes || {}
+        if (at.POSITION == null) continue
+        const acc = gltf.accessors[at.POSITION], bv = gltf.bufferViews[acc.bufferView]
+        const byteOffset = (bv.byteOffset || 0) + (acc.byteOffset || 0)
+        const count = acc.count || 0
+        const pos = new Float32Array(binChunk, byteOffset, count * 3)
+        for (let i = 0; i < count; i++) pts2d.push([pos[i*3], pos[i*3+2]])
+        if (prim.indices != null) {
+          const iacc = gltf.accessors[prim.indices], ibv = gltf.bufferViews[iacc.bufferView]
+          const ioff  = (ibv.byteOffset || 0) + (iacc.byteOffset || 0)
+          const icount = iacc.count || 0
+          const idx = iacc.componentType === 5125
+            ? new Uint32Array(binChunk, ioff, icount)
+            : new Uint16Array(binChunk, ioff, icount)
+          for (let i = 0; i + 2 < idx.length; i += 3)
+            faces.push([vertexStart+idx[i], vertexStart+idx[i+1], vertexStart+idx[i+2]])
         }
-      } else if (item.customModelId && item.customModelB64 && item.customModelExt) {
-        try {
-          const buf = b64ToBuffer(item.customModelB64)
-          if (item.customModelExt === 'obj') {
-            const text = new TextDecoder().decode(buf)
-            const geo = parseOBJ(T, text)
-            const color = item.color ? hex2color(T, item.color) : new T.Color(0x8f8f8f)
-            const mat = new T.MeshStandardMaterial({ color, roughness: 0.65 })
-            const m = new T.Mesh(geo, mat)
-            m.castShadow = true; m.receiveShadow = true
-            mesh = new T.Group(); mesh.add(m)
-          } else {
-            mesh = await parseGLB(T, buf)
-          }
-        } catch (err) {
-          console.warn('Custom model parse failed, using fallback:', err)
-          mesh = buildFurnitureMesh(T, item)
+        vertexStart += count
+      }
+    }
+    return pts2d.length ? { pts2d, faces } : null
+  } catch (err) {
+    console.warn('parseGLBTopDown failed', err)
+    return null
+  }
+}
+
+/* ── Draw helpers ── */
+function drawModelTopDown(ctx, item, tdData, opts = {}) {
+  if (!tdData?.pts2d?.length) return
+  const {
+    fillStyle = 'rgba(139,92,246,0.12)',
+    strokeStyle = 'rgba(139,92,246,0.75)',
+    lineWidth = 0.9,
+    rotationDeg,
+  } = opts
+  const { pts2d, faces } = tdData
+  // If the caller already rotated the canvas context, pass rotationDeg: 0 to avoid double rotation.
+  const angle  = (rotationDeg != null ? rotationDeg : (item.rotation || 0)) * Math.PI / 180
+  const cosA = Math.cos(angle), sinA = Math.sin(angle)
+  const rotated = pts2d.map(([x, z]) => [x*cosA - z*sinA, x*sinA + z*cosA])
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
+  for (const [x, z] of rotated) {
+    if (x < minX) minX = x; if (x > maxX) maxX = x
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z
+  }
+  const mw = maxX - minX || 1, mz = maxZ - minZ || 1
+  const hw = item.w / 2, hd = item.d / 2
+  const sx = item.w / mw, sz = item.d / mz
+  ctx.save()
+  ctx.strokeStyle = strokeStyle
+  ctx.fillStyle = fillStyle
+  ctx.lineWidth = lineWidth
+  if (faces?.length) {
+    for (const [i0,i1,i2] of faces) {
+      const p0=rotated[i0], p1=rotated[i1], p2=rotated[i2]; if (!p0||!p1||!p2) continue
+      ctx.beginPath()
+      ctx.moveTo((p0[0]-minX)*sx-hw, (p0[1]-minZ)*sz-hd)
+      ctx.lineTo((p1[0]-minX)*sx-hw, (p1[1]-minZ)*sz-hd)
+      ctx.lineTo((p2[0]-minX)*sx-hw, (p2[1]-minZ)*sz-hd)
+      ctx.closePath(); ctx.fill(); ctx.stroke()
+    }
+  } else {
+    ctx.beginPath(); let first = true
+    for (const [x,z] of rotated) {
+      const px=(x-minX)*sx-hw, pz=(z-minZ)*sz-hd
+      if (first){ctx.moveTo(px,pz);first=false}else ctx.lineTo(px,pz)
+    }
+    ctx.closePath(); ctx.fill(); ctx.stroke()
+  }
+  ctx.restore()
+}
+
+function traceFurnitureSilhouette(ctx, item) {
+  const hw = item.w / 2
+  const hd = item.d / 2
+  const cat = item.category
+  const name = (item.name || item.label || '').toLowerCase()
+ 
+  ctx.beginPath()
+ 
+  // ── SEATING ──────────────────────────────────────────────────────────────
+  if (cat === 'Seating') {
+    const isSofa = name.includes('sofa') || name.includes('couch') || item.w > 140
+    if (isSofa) {
+      // Sofa: slightly squared front, rounded back corners
+      const r = Math.max(5, Math.min(14, Math.min(hw, hd) * 0.22))
+      ctx.roundRect(-hw, -hd, item.w, item.d, [r, r, r * 0.4, r * 0.4])
+    } else {
+      // Chair: more rounded
+      const r = Math.max(6, Math.min(18, Math.min(hw, hd) * 0.3))
+      ctx.roundRect(-hw, -hd, item.w, item.d, r)
+    }
+    return
+  }
+ 
+  // ── TABLES ───────────────────────────────────────────────────────────────
+  if (cat === 'Tables' || cat === 'Dining') {
+    const isRound = name.includes('round') || name.includes('oval') ||
+                    name.includes('circle') || Math.abs(item.w - item.d) < 12
+    const isOval  = name.includes('oval')
+    if (isRound || isOval) {
+      ctx.ellipse(0, 0, hw, hd, 0, 0, Math.PI * 2)
+    } else {
+      const r = Math.max(4, Math.min(12, Math.min(hw, hd) * 0.18))
+      ctx.roundRect(-hw, -hd, item.w, item.d, r)
+    }
+    return
+  }
+ 
+  // ── BEDROOM ──────────────────────────────────────────────────────────────
+  if (cat === 'Bedroom') {
+    if (name.includes('bed')) {
+      const r = Math.max(5, Math.min(12, Math.min(hw, hd) * 0.18))
+      ctx.roundRect(-hw, -hd, item.w, item.d, r)
+    } else if (name.includes('wardrobe') || name.includes('closet') || name.includes('armoire')) {
+      ctx.roundRect(-hw + 3, -hd + 3, item.w - 6, item.d - 6, 3)
+    } else if (name.includes('dresser') || name.includes('chest')) {
+      ctx.roundRect(-hw + 2, -hd + 2, item.w - 4, item.d - 4, 4)
+    } else {
+      ctx.roundRect(-hw + 4, -hd + 4, item.w - 8, item.d - 8, 4)
+    }
+    return
+  }
+ 
+  // ── BATHROOM ─────────────────────────────────────────────────────────────
+  if (cat === 'Bathroom') {
+    if (name.includes('bathtub') || name.includes('tub')) {
+      const r = Math.max(12, Math.min(hw, hd) * 0.48)
+      ctx.roundRect(-hw, -hd, item.w, item.d, r)
+    } else if (name.includes('toilet')) {
+      // Toilet: D-shape — rectangular back, oval front
+      ctx.moveTo(-hw, -hd)
+      ctx.lineTo(hw, -hd)
+      ctx.lineTo(hw, -hd + item.d * 0.38)
+      ctx.bezierCurveTo(hw, hd + hd * 0.15, -hw, hd + hd * 0.15, -hw, -hd + item.d * 0.38)
+      ctx.closePath()
+    } else if (name.includes('shower')) {
+      ctx.roundRect(-hw + 2, -hd + 2, item.w - 4, item.d - 4, 6)
+    } else {
+      // Sink: rounded rectangle with front curve
+      ctx.roundRect(-hw + 4, -hd + 2, item.w - 8, item.d - 4, [5, 5, 12, 12])
+    }
+    return
+  }
+ 
+  // ── LIGHTING ─────────────────────────────────────────────────────────────
+  if (cat === 'Lighting') {
+    ctx.ellipse(0, 0, Math.min(hw, hd), Math.min(hw, hd), 0, 0, Math.PI * 2)
+    return
+  }
+ 
+  // ── DECOR ─────────────────────────────────────────────────────────────────
+  if (cat === 'Decor') {
+    if (name.includes('plant') || name.includes('vase') || name.includes('pot')) {
+      ctx.ellipse(0, 0, Math.min(hw, hd), Math.min(hw, hd), 0, 0, Math.PI * 2)
+    } else {
+      ctx.roundRect(-hw + 2, -hd + 2, item.w - 4, item.d - 4, 5)
+    }
+    return
+  }
+ 
+  // ── KITCHEN ──────────────────────────────────────────────────────────────
+  if (cat === 'Kitchen') {
+    if (name.includes('island')) {
+      ctx.roundRect(-hw, -hd, item.w, item.d, [8, 8, 8, 8])
+    } else {
+      ctx.roundRect(-hw + 2, -hd + 2, item.w - 4, item.d - 4, 4)
+    }
+    return
+  }
+ 
+  // ── OFFICE ───────────────────────────────────────────────────────────────
+  if (cat === 'Office') {
+    if (name.includes('chair')) {
+      ctx.ellipse(0, 0, Math.min(hw, hd) * 0.9, Math.min(hw, hd) * 0.9, 0, 0, Math.PI * 2)
+    } else {
+      ctx.roundRect(-hw + 2, -hd + 2, item.w - 4, item.d - 4, 4)
+    }
+    return
+  }
+ 
+  // ── DEFAULT ───────────────────────────────────────────────────────────────
+  ctx.roundRect(-hw, -hd, item.w, item.d, 5)
+}
+
+function roomPoly(cfg) {
+  const W = (cfg.width||5)*GRID, D = (cfg.depth||4)*GRID
+  if (cfg.shape==='l-shape') {
+    const cw=Math.round(W*0.6), cd=Math.round(D*0.55)
+    return [[OX,OY],[OX+W,OY],[OX+W,OY+cd],[OX+cw,OY+cd],[OX+cw,OY+D],[OX,OY+D]]
+  }
+  if (cfg.shape==='square') { const S=Math.min(W,D); return [[OX,OY],[OX+S,OY],[OX+S,OY+S],[OX,OY+S]] }
+  return [[OX,OY],[OX+W,OY],[OX+W,OY+D],[OX,OY+D]]
+}
+
+function drawDoor(ctx, d, sel) {
+  const dw=d.w||80
+  ctx.save(); ctx.translate(d.x,d.y); ctx.rotate((d.rotation||0)*Math.PI/180)
+  ctx.strokeStyle='rgba(51,65,85,0.22)'; ctx.lineWidth=0.8; ctx.setLineDash([4,3])
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.arc(0,0,dw,0,Math.PI/2); ctx.stroke(); ctx.setLineDash([])
+  const doorCol = d.color || '#f1f5f9'
+  const frameCol = d.frameColor || (sel ? '#3b82f6' : '#475569')
+  ctx.fillStyle=doorCol; ctx.strokeStyle=frameCol; ctx.lineWidth=sel?2.5:2
+  ctx.beginPath(); ctx.rect(0,-6,dw,12); ctx.fill(); ctx.stroke()
+  ctx.fillStyle='#94a3b8'; ctx.beginPath(); ctx.arc(dw-10,0,3.5,0,Math.PI*2); ctx.fill()
+  ctx.fillStyle='#334155'; ctx.font='bold 10px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'
+  ctx.fillText('D',dw/2,0)
+  if (sel) { ctx.strokeStyle='#3b82f6'; ctx.lineWidth=1.5; ctx.setLineDash([5,3]); ctx.beginPath(); ctx.rect(-8,-14,dw+16,28); ctx.stroke(); ctx.setLineDash([]) }
+  ctx.restore()
+}
+
+function drawWindow(ctx, w, sel) {
+  const ww=w.w||100
+  ctx.save(); ctx.translate(w.x,w.y); ctx.rotate((w.rotation||0)*Math.PI/180)
+  const frame = w.frameColor || (sel ? '#3b82f6' : '#2563eb')
+  const glass = w.glassTint || '#93c5fd'
+  ctx.fillStyle = glass + '77'; ctx.strokeStyle=frame; ctx.lineWidth=sel?2.5:2
+  ctx.beginPath(); ctx.rect(-ww/2,-8,ww,16); ctx.fill(); ctx.stroke()
+  // Style controls mullions
+  const style = (w.style || 'cross').toLowerCase()
+  ctx.strokeStyle = (glass + 'aa'); ctx.lineWidth=0.9
+  if (style === 'cross' || style === 'double') {
+    ctx.beginPath(); ctx.moveTo(0,-8); ctx.lineTo(0,8); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(-ww/2,0); ctx.lineTo(ww/2,0); ctx.stroke()
+  } else if (style === 'double') {
+    ctx.beginPath(); ctx.moveTo(-ww/4,-8); ctx.lineTo(-ww/4,8); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(ww/4,-8); ctx.lineTo(ww/4,8); ctx.stroke()
+  }
+  ctx.fillStyle='rgba(255,255,255,0.38)'; ctx.beginPath(); ctx.rect(-ww/2+3,-7,ww/2-6,6); ctx.fill()
+  ctx.fillStyle=frame; ctx.font='bold 9px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'
+  ctx.fillText('W',0,0)
+  if (sel) { ctx.strokeStyle='#3b82f6'; ctx.lineWidth=1.5; ctx.setLineDash([5,3]); ctx.beginPath(); ctx.rect(-ww/2-6,-14,ww+12,28); ctx.stroke(); ctx.setLineDash([]) }
+  ctx.restore()
+}
+
+function drawCurtain(ctx, c, sel) {
+  const cw=c.w||120, col=c.color||'#fca5a5'
+  const style=(c.style||'standard').toLowerCase()
+  const alpha = style==='sheer'?0.38:style==='blackout'?0.9:0.65
+  ctx.save(); ctx.translate(c.x,c.y); ctx.rotate((c.rotation||0)*Math.PI/180)
+  ctx.strokeStyle='#78716c'; ctx.lineWidth=2.5
+  ctx.beginPath(); ctx.moveTo(-cw/2-8,-10); ctx.lineTo(cw/2+8,-10); ctx.stroke()
+  ctx.fillStyle='#a8a29e'
+  ;[-cw/2-8,cw/2+8].forEach(ex=>{ctx.beginPath();ctx.arc(ex,-10,4,0,Math.PI*2);ctx.fill()})
+  ctx.fillStyle = col + Math.round(alpha*255).toString(16).padStart(2,'0')
+  ctx.strokeStyle='rgba(0,0,0,0.15)'; ctx.lineWidth=0.7
+  ctx.beginPath(); ctx.moveTo(-cw/2,-10)
+  for (let i=0;i<4;i++){const x1=-cw/2+(i+0.5)*(cw/2)/4+2,x2=-cw/2+(i+1)*(cw/2)/4;ctx.quadraticCurveTo(x1,24,x2,-10)}
+  ctx.closePath(); ctx.fill(); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(cw/2,-10)
+  for (let i=0;i<4;i++){const x1=cw/2-(i+0.5)*(cw/2)/4-2,x2=cw/2-(i+1)*(cw/2)/4;ctx.quadraticCurveTo(x1,24,x2,-10)}
+  ctx.closePath(); ctx.fill(); ctx.stroke()
+  if (sel) { ctx.strokeStyle='#3b82f6'; ctx.lineWidth=1.5; ctx.setLineDash([5,3]); ctx.beginPath(); ctx.rect(-cw/2-12,-16,cw+24,46); ctx.stroke(); ctx.setLineDash([]) }
+  ctx.restore()
+}
+
+function drawFurnDetail(ctx, item, topDownCache) {
+  const hw = item.w / 2
+  const hd = item.d / 2
+  ctx.save()
+ 
+  // Custom model silhouette drawn in base pass — skip
+  const tdData = item.customModelId && topDownCache ? topDownCache[item.customModelId] : null
+  if (tdData?.pts2d?.length) { ctx.restore(); return }
+ 
+  const name = (item.name || item.label || '').toLowerCase()
+ 
+  // ── Helper: draw a small chrome/metal dot handle ─────────────────────────
+  const handle = (x, y, r = 3.2) => {
+    ctx.fillStyle = 'rgba(210,210,220,0.9)'
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill()
+    ctx.strokeStyle = 'rgba(80,80,100,0.4)'; ctx.lineWidth = 0.5
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke()
+  }
+ 
+  // ── Helper: wood grain lines ──────────────────────────────────────────────
+  const woodGrain = (x0, y0, w, h, numLines = 6) => {
+    ctx.save()
+    ctx.strokeStyle = 'rgba(80,45,10,0.08)'; ctx.lineWidth = 0.5
+    ctx.beginPath(); ctx.rect(x0, y0, w, h); ctx.clip()
+    for (let i = 0; i < numLines; i++) {
+      const ly = y0 + (i + 0.5) * (h / numLines)
+      ctx.beginPath(); ctx.moveTo(x0, ly); ctx.lineTo(x0 + w, ly + (Math.random() * 3 - 1.5)); ctx.stroke()
+    }
+    ctx.restore()
+  }
+ 
+  switch (item.category) {
+ 
+    // ════════════════════════════════════════════════════════════════════════
+    case 'Seating': {
+      const isSofa = name.includes('sofa') || name.includes('couch') || item.w > 140
+      const armW   = item.w * 0.092
+      const numCush = isSofa ? Math.max(2, Math.round(item.w / 64)) : 1
+      const cushTotalW = item.w - armW * 2
+      const cW = cushTotalW / numCush
+ 
+      // Back band (upholstered top)
+      ctx.fillStyle = 'rgba(0,0,0,0.26)'
+      ctx.beginPath(); ctx.roundRect(-hw + 2, -hd + 2, item.w - 4, hd * 0.25, [4, 4, 0, 0]); ctx.fill()
+ 
+      // Armrests (solid blocks)
+      ctx.fillStyle = 'rgba(0,0,0,0.22)'
+      ctx.beginPath(); ctx.roundRect(-hw + 1.5, -hd + 3, armW, item.d - 6, [3, 0, 0, 3]); ctx.fill()
+      ctx.beginPath(); ctx.roundRect(hw - armW - 1.5, -hd + 3, armW, item.d - 6, [0, 3, 3, 0]); ctx.fill()
+      // Armrest top highlight
+      ctx.fillStyle = 'rgba(255,255,255,0.1)'
+      ctx.beginPath(); ctx.roundRect(-hw + 2, -hd + 3, armW - 1, 4, 2); ctx.fill()
+      ctx.beginPath(); ctx.roundRect(hw - armW - 1, -hd + 3, armW - 1, 4, 2); ctx.fill()
+ 
+      // Cushion dividers + sheen
+      const cushStartX = -hw + armW
+      ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 1.1
+      for (let i = 0; i <= numCush; i++) {
+        const cx = cushStartX + i * cW
+        ctx.beginPath(); ctx.moveTo(cx, -hd * 0.5); ctx.lineTo(cx, hd - 4); ctx.stroke()
+      }
+      // Per-cushion sheen + button
+      for (let i = 0; i < numCush; i++) {
+        const cx = cushStartX + i * cW + cW / 2
+        ctx.fillStyle = 'rgba(255,255,255,0.14)'
+        ctx.beginPath(); ctx.ellipse(cx, hd * 0.04, cW * 0.24, hd * 0.12, 0, 0, Math.PI * 2); ctx.fill()
+        // Cushion seam line
+        ctx.strokeStyle = 'rgba(0,0,0,0.07)'; ctx.lineWidth = 0.6
+        ctx.beginPath(); ctx.moveTo(cushStartX + i * cW + 3, hd * 0.28); ctx.lineTo(cushStartX + (i+1) * cW - 3, hd * 0.28); ctx.stroke()
+      }
+ 
+      // Front piping welt
+      ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.lineWidth = 1.2
+      ctx.beginPath(); ctx.moveTo(-hw + armW + 2, hd - 5); ctx.lineTo(hw - armW - 2, hd - 5); ctx.stroke()
+ 
+      // Legs (4 small dots)
+      ctx.fillStyle = 'rgba(40,30,20,0.5)'
+      const lLocs = isSofa
+        ? [[-hw*0.88, hd-5],[hw*0.88, hd-5],[-hw*0.88,-hd+3],[hw*0.88,-hd+3],[0,hd-5]]
+        : [[-hw*0.78,hd-4],[hw*0.78,hd-4],[-hw*0.78,-hd+3],[hw*0.78,-hd+3]]
+      lLocs.forEach(([lx,ly]) => { ctx.beginPath(); ctx.arc(lx,ly,3,0,Math.PI*2); ctx.fill() })
+      break
+    }
+ 
+    // ════════════════════════════════════════════════════════════════════════
+    case 'Tables':
+    case 'Dining': {
+      const isRound = name.includes('round') || name.includes('oval') || Math.abs(item.w - item.d) < 12
+      const numLegs = isRound ? 3 : 4
+      const legR    = 5.5
+ 
+      // Wood grain on surface
+      woodGrain(-hw + 8, -hd + 8, item.w - 16, item.d - 16, 7)
+ 
+      // Surface top-coat sheen
+      ctx.fillStyle = 'rgba(255,255,255,0.24)'
+      if (isRound) {
+        ctx.beginPath(); ctx.ellipse(-hw*0.18, -hd*0.22, hw*0.4, hd*0.18, -0.4, 0, Math.PI*2); ctx.fill()
+      } else {
+        ctx.beginPath(); ctx.roundRect(-hw*0.5, -hd*0.38, hw*1.0, hd*0.24, 3); ctx.fill()
+      }
+ 
+      // Apron (inner line)
+      ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth = 0.8
+      if (isRound) {
+        ctx.beginPath(); ctx.ellipse(0, 0, hw - 8, hd - 8, 0, 0, Math.PI*2); ctx.stroke()
+      } else {
+        ctx.beginPath(); ctx.roundRect(-hw+10, -hd+10, item.w-20, item.d-20, 3); ctx.stroke()
+      }
+ 
+      // Legs
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'
+      if (isRound) {
+        for (let i = 0; i < numLegs; i++) {
+          const a = (i/numLegs)*Math.PI*2 + Math.PI/6
+          const lr = Math.min(hw,hd)*0.7
+          ctx.beginPath(); ctx.arc(Math.cos(a)*lr, Math.sin(a)*lr, legR, 0, Math.PI*2); ctx.fill()
         }
       } else {
-        mesh = buildFurnitureMesh(T, item)
+        for (const [lx,ly] of [[-hw+8,-hd+8],[hw-8,-hd+8],[-hw+8,hd-8],[hw-8,hd-8]]) {
+          ctx.beginPath(); ctx.roundRect(lx-legR,ly-legR,legR*2,legR*2,2); ctx.fill()
+          // Leg highlight
+          ctx.fillStyle = 'rgba(255,255,255,0.12)'
+          ctx.beginPath(); ctx.roundRect(lx-legR+1,ly-legR+1,legR,legR,1); ctx.fill()
+          ctx.fillStyle = 'rgba(0,0,0,0.35)'
+        }
       }
-
-      if (!mesh) mesh = buildFurnitureMesh(T, item)
-      mesh.userData.itemId = item.id
-      const wM = item.widthM || (item.w / GRID2D)
-      const hM = item.heightM || 0.8
-      const dM = item.depthM || (item.d / GRID2D)
-      scaleModelToFit(T, mesh, wM, hM, dM)
-
-      mesh.traverse((o) => {
-        if (o.isMesh) {
-          o.castShadow = !!showShadows
-          o.receiveShadow = !!showShadows
+      break
+    }
+ 
+    // ════════════════════════════════════════════════════════════════════════
+    case 'Bedroom': {
+      if (name.includes('wardrobe') || name.includes('closet') || name.includes('armoire')) {
+        // Cabinet fill
+        ctx.fillStyle = 'rgba(195,218,255,0.6)'
+        ctx.beginPath(); ctx.roundRect(-hw+4, -hd+4, item.w-8, item.d-8, 3); ctx.fill()
+        woodGrain(-hw+4, -hd+4, (item.w-8)/2-1, item.d-8, 5)
+        woodGrain(2, -hd+4, (item.w-8)/2-1, item.d-8, 5)
+ 
+        // Door split
+        ctx.strokeStyle = 'rgba(50,70,130,0.45)'; ctx.lineWidth = 1.4
+        ctx.beginPath(); ctx.moveTo(0, -hd+5); ctx.lineTo(0, hd-5); ctx.stroke()
+ 
+        // Mirror panels (upper third each door)
+        for (const sx of [-1, 1]) {
+          const mx = sx > 0 ? 3 : -hw + 3
+          const mw = hw - 6
+          ctx.fillStyle = 'rgba(160,192,240,0.35)'
+          ctx.beginPath(); ctx.roundRect(mx, -hd*0.82, mw, hd*0.64, 2); ctx.fill()
+          // Mirror reflection line
+          ctx.strokeStyle = 'rgba(200,215,245,0.6)'; ctx.lineWidth = 0.8
+          ctx.beginPath()
+          ctx.moveTo(mx + mw*0.18, -hd*0.78)
+          ctx.lineTo(mx + mw*0.38, -hd*0.25)
+          ctx.stroke()
         }
-        if (o.isMesh && o.material) {
-          const mats = Array.isArray(o.material) ? o.material : [o.material]
-          mats.forEach((m) => {
-            if (m && 'polygonOffset' in m) {
-              m.polygonOffset = true
-              m.polygonOffsetFactor = -1
-              m.polygonOffsetUnits = -1
-            }
-            if (m && m.envMapIntensity == null) m.envMapIntensity = 0.9
-            ;['map', 'roughnessMap', 'metalnessMap', 'normalMap', 'aoMap', 'emissiveMap'].forEach((k) => {
-              const t = m?.[k]
-              if (t && typeof t === 'object' && 'anisotropy' in t) t.anisotropy = Math.max(t.anisotropy || 1, 8)
-            })
-          })
+        // Handles
+        handle(-hw*0.06, 0); handle(hw*0.06, 0)
+        // Crown moulding (top line)
+        ctx.strokeStyle = 'rgba(60,80,130,0.25)'; ctx.lineWidth = 1
+        ctx.beginPath(); ctx.moveTo(-hw+3, -hd+3.5); ctx.lineTo(hw-3, -hd+3.5); ctx.stroke()
+        // Toe kick (bottom)
+        ctx.fillStyle = 'rgba(0,0,0,0.12)'
+        ctx.beginPath(); ctx.roundRect(-hw+3, hd-6, item.w-6, 3, 1); ctx.fill()
+ 
+      } else if (name.includes('dresser') || name.includes('chest')) {
+        // Drawer unit
+        ctx.fillStyle = 'rgba(215,222,248,0.7)'
+        ctx.beginPath(); ctx.roundRect(-hw+4, -hd+4, item.w-8, item.d-8, 3); ctx.fill()
+        woodGrain(-hw+4, -hd+4, item.w-8, item.d-8, 6)
+        const numDrawers = Math.round(item.d / 28)
+        const dH = (item.d - 10) / numDrawers
+        ctx.strokeStyle = 'rgba(60,70,120,0.3)'; ctx.lineWidth = 0.8
+        for (let i = 1; i < numDrawers; i++) {
+          const ly = -hd + 5 + i * dH
+          ctx.beginPath(); ctx.moveTo(-hw+5, ly); ctx.lineTo(hw-5, ly); ctx.stroke()
         }
-      })
-
-      const pos = itemTo3D(item)
-      const elevation = Math.max(0, Math.min((cfg.height||2.8) - hM, item.elevationM || 0))
-      mesh.position.set(pos.x, elevation, pos.z)
-      mesh.rotation.y = pos.ry
-      group.add(mesh)
-
-      // Yield occasionally to keep UI responsive when many models load.
-      await new Promise((resolve) => setTimeout(resolve, 0))
+        for (let i = 0; i < numDrawers; i++) {
+          handle(0, -hd + 5 + (i + 0.5) * dH)
+        }
+ 
+      } else if (name.includes('nightstand') || name.includes('bedside')) {
+        ctx.fillStyle = 'rgba(218,224,250,0.72)'
+        ctx.beginPath(); ctx.roundRect(-hw+5, -hd+5, item.w-10, item.d-10, 3); ctx.fill()
+        woodGrain(-hw+5, -hd+5, item.w-10, item.d-10, 4)
+        // Lamp circle suggestion
+        ctx.fillStyle = 'rgba(253,186,116,0.2)'
+        ctx.beginPath(); ctx.arc(-hw*0.05, -hd*0.2, Math.min(hw,hd)*0.4, 0, Math.PI*2); ctx.fill()
+        // Drawer
+        ctx.strokeStyle = 'rgba(60,70,120,0.3)'; ctx.lineWidth = 0.7
+        ctx.beginPath(); ctx.moveTo(-hw+6, 2); ctx.lineTo(hw-6, 2); ctx.stroke()
+        handle(0, -hd*0.4)
+        handle(0, hd*0.35)
+ 
+      } else {
+        // BED ──────────────────────────────────────────────────────────────
+        // Mattress base
+        ctx.fillStyle = 'rgba(248,246,242,0.96)'
+        ctx.beginPath(); ctx.roundRect(-hw+4, -hd+4, item.w-8, item.d-8, 6); ctx.fill()
+ 
+        // Headboard (rich, upholstered)
+        const headH = hd * 0.2
+        ctx.fillStyle = 'rgba(105,72,38,0.58)'
+        ctx.beginPath(); ctx.roundRect(-hw+3, -hd+2, item.w-6, headH, [5,5,0,0]); ctx.fill()
+        // Headboard tufting buttons
+        const numTufts = Math.max(2, Math.round(item.w / 52))
+        for (let t = 0; t < numTufts; t++) {
+          const tx = -hw + 12 + t * ((item.w - 24) / (numTufts - 1 || 1))
+          ctx.fillStyle = 'rgba(60,35,12,0.65)'
+          ctx.beginPath(); ctx.arc(tx, -hd + headH*0.55, 2.5, 0, Math.PI*2); ctx.fill()
+        }
+        // Headboard decorative panel
+        ctx.strokeStyle = 'rgba(140,100,50,0.3)'; ctx.lineWidth = 0.7
+        ctx.beginPath(); ctx.roundRect(-hw+8, -hd+4, item.w-16, headH-4, 3); ctx.stroke()
+ 
+        // Footboard
+        ctx.fillStyle = 'rgba(120,85,45,0.32)'
+        ctx.beginPath(); ctx.roundRect(-hw+4, hd-headH*0.65, item.w-8, headH*0.6, [0,0,4,4]); ctx.fill()
+ 
+        // Duvet — subtle tonal rectangle
+        ctx.fillStyle = 'rgba(235,232,255,0.55)'
+        ctx.beginPath(); ctx.roundRect(-hw+6, -hd+headH+2, item.w-12, item.d-headH*1.6, 5); ctx.fill()
+ 
+        // Duvet stitching lines (quilted look)
+        ctx.strokeStyle = 'rgba(180,175,210,0.45)'; ctx.lineWidth = 0.5
+        const quiltRows = 4
+        for (let q = 1; q < quiltRows; q++) {
+          const qy = -hd + headH + 2 + q * ((item.d - headH*1.6) / quiltRows)
+          ctx.beginPath(); ctx.moveTo(-hw+8, qy); ctx.lineTo(hw-8, qy); ctx.stroke()
+        }
+        // Vertical quilt lines
+        const quiltCols = Math.round(item.w / 45)
+        for (let q = 1; q < quiltCols; q++) {
+          const qx = -hw + 6 + q * ((item.w-12) / quiltCols)
+          ctx.beginPath()
+          ctx.moveTo(qx, -hd+headH+4)
+          ctx.lineTo(qx, hd-headH*0.7)
+          ctx.stroke()
+        }
+ 
+        // Duvet fold-back
+        ctx.fillStyle = 'rgba(245,243,255,0.65)'
+        ctx.beginPath(); ctx.roundRect(-hw+6, -hd+headH+2, item.w-12, hd*0.2, [5,5,0,0]); ctx.fill()
+ 
+        // Pillows
+        const numPillows = item.w > 130 ? 2 : 1
+        const pW = item.w > 130 ? item.w * 0.36 : item.w * 0.56
+        const pXs = numPillows === 2 ? [-item.w * 0.2, item.w * 0.2] : [0]
+        const pillowTop = -hd + headH + 4
+        for (const px of pXs) {
+          // Pillow body
+          ctx.fillStyle = 'rgba(255,255,255,0.95)'
+          ctx.beginPath(); ctx.roundRect(px-pW/2, pillowTop, pW, hd*0.24, 5); ctx.fill()
+          // Pillow border stitch
+          ctx.strokeStyle = 'rgba(210,208,215,0.7)'; ctx.lineWidth = 0.7
+          ctx.beginPath(); ctx.roundRect(px-pW/2+3, pillowTop+3, pW-6, hd*0.2, 3); ctx.stroke()
+          // Pillow centre crease
+          ctx.strokeStyle = 'rgba(190,188,200,0.4)'; ctx.lineWidth = 0.5
+          ctx.beginPath(); ctx.moveTo(px, pillowTop+5); ctx.lineTo(px, pillowTop+hd*0.2); ctx.stroke()
+        }
+      }
+      break
     }
-  }
-
-  const syncFurnitureTransforms = useCallback(() => {
-    const fg = fGroupRef.current
-    if (!fg) return
-    const currentItems = itemsRef.current || []
-    const roomHeight = cfgRef.current?.height || 2.8
-    for (const mesh of fg.children) {
-      if (!mesh.userData?.itemId) continue
-      const item = currentItems.find(i => i.id === mesh.userData.itemId)
-      if (!item) continue
-      const pos = itemTo3D(item)
-      const maxLift = Math.max(0, roomHeight - (item.heightM || 0.8))
-      const elevation = clamp((item.elevationM || 0), 0, maxLift)
-      mesh.position.set(pos.x, elevation, pos.z)
-      mesh.rotation.y = pos.ry
+ 
+    // ════════════════════════════════════════════════════════════════════════
+    case 'Storage': {
+      // Carcass border
+      ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 1
+      ctx.beginPath(); ctx.roundRect(-hw+3, -hd+3, item.w-6, item.d-6, 3); ctx.stroke()
+ 
+      const numDoors = Math.max(1, Math.round(item.w / 46))
+      const dW = (item.w - 6) / numDoors
+ 
+      for (let i = 0; i < numDoors; i++) {
+        const dx = -hw + 3 + i * dW + dW / 2
+        // Door face
+        ctx.fillStyle = 'rgba(205,192,165,0.2)'
+        ctx.beginPath(); ctx.roundRect(dx - dW/2+2, -hd*0.65, dW-4, hd*1.22, 2); ctx.fill()
+        woodGrain(dx - dW/2+2, -hd*0.65, dW-4, hd*1.22, 4)
+        // Inset raised panel
+        ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth = 0.7
+        ctx.beginPath(); ctx.roundRect(dx-dW/2+6, -hd*0.55, dW-12, hd*1.02, 2); ctx.stroke()
+        // Handle
+        handle(dx, 0)
+      }
+ 
+      // Door split lines
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)'; ctx.lineWidth = 1.1
+      for (let i = 1; i < numDoors; i++) {
+        const sx = -hw + 3 + i * dW
+        ctx.beginPath(); ctx.moveTo(sx, -hd+3); ctx.lineTo(sx, hd-3); ctx.stroke()
+      }
+      // Crown line
+      ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(-hw+3, -hd+4); ctx.lineTo(hw-3, -hd+4); ctx.stroke()
+      // Toe kick shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.1)'
+      ctx.beginPath(); ctx.roundRect(-hw+3, hd-6, item.w-6, 3, 1); ctx.fill()
+      break
     }
-  }, [])
-
-  useEffect(() => {
-    syncFurnitureTransforms()
-  }, [items, cfg.height, syncFurnitureTransforms])
-
-  // ── Render doors, windows, curtains in 3D ──────────────────────────────────
-  function populateOverlays(T, group, ovs, roomCfg) {
-    const H = (roomCfg?.height) || 2.8
-    const WALL_THICK = 0.12
-    const SURFACE_EPS = 0.03
-    const doorMatBase = new T.MeshStandardMaterial({ color: 0xc8965a, roughness: 0.75, metalness: 0, side: T.DoubleSide })
-    const doorFrameMatBase = new T.MeshStandardMaterial({ color: 0x8a6030, roughness: 0.8, side: T.DoubleSide })
-    const glassMatBase = new T.MeshStandardMaterial({ color: 0x88bbee, roughness: 0.02, metalness: 0.05, transparent: true, opacity: 0.32, side: T.DoubleSide })
-    const frameMatBase = new T.MeshStandardMaterial({ color: 0xd0d0d0, roughness: 0.5, metalness: 0.3, side: T.DoubleSide })
-    const handleMat = new T.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.2, metalness: 0.85 })
-    const curtainMat = (hexColor, opacity = 1) => new T.MeshStandardMaterial({
-      color: hex2color(T, hexColor || '#fca5a5'),
-      roughness: 0.95,
-      side: T.DoubleSide,
-      transparent: opacity < 1,
-      opacity,
-    })
-
-    const box3d = (w, h, d, mat) => { const m = new T.Mesh(new T.BoxGeometry(w, h, d), mat); m.castShadow = true; m.receiveShadow = true; return m }
-
-    // Apply polygon offset so overlays don't z-fight with wall surfaces.
-    ;[doorMatBase, doorFrameMatBase, glassMatBase, frameMatBase, handleMat].forEach(m => {
-      m.polygonOffset = true
-      m.polygonOffsetFactor = -2
-      m.polygonOffsetUnits = -2
-    })
-
-    // Doors
-    for (const d of (ovs?.doors || [])) {
-      const doorMat = doorMatBase.clone()
-      const doorFrameMat = doorFrameMatBase.clone()
-      if (d.color) doorMat.color = hex2color(T, d.color)
-      if (d.frameColor) doorFrameMat.color = hex2color(T, d.frameColor)
-
-      const dW = (d.w || 80) / GRID2D
-      // Door height is now independent from room height (clamped to fit).
-      const dH = Math.min(H - 0.1, Math.max(1.6, d.heightM != null ? +d.heightM : 2.1))
-      const g = new T.Group()
-
-      // Door panel (wood)
-      const panel = box3d(dW, dH, WALL_THICK + SURFACE_EPS * 2, doorMat)
-      panel.position.set(dW / 2, dH / 2, 0)
-      g.add(panel)
-
-      // Decorative inset panels (adds realism)
-      const insetMat = new T.MeshStandardMaterial({ color: 0xb98348, roughness: 0.78, metalness: 0.02, side: T.DoubleSide })
-      const insetDepth = WALL_THICK * 0.25
-      const insetW = dW * 0.78
-      const insetH = dH * 0.26
-      ;[-0.18, 0.18].forEach((oy) => {
-        const ip = box3d(insetW, insetH, insetDepth, insetMat)
-        ip.position.set(dW / 2, dH * (0.52 + oy), WALL_THICK * 0.15)
-        g.add(ip)
-      })
-
-      // Door frame (3 sides) - make it thicker & correctly aligned (no top gap)
-      const fT = 0.075
-      const fDepth = WALL_THICK + 0.06
-      ;[
-        [dW / 2, dH + fT / 2, 0, dW + fT * 2, fT, fDepth],        // top
-        [-fT / 2, dH / 2, 0, fT, dH + fT, fDepth],                // left
-        [dW + fT / 2, dH / 2, 0, fT, dH + fT, fDepth],            // right
-      ].forEach(([x, y, z, w, h, de]) => {
-        const fm = box3d(w, h, de, doorFrameMat)
-        fm.position.set(x, y, z); g.add(fm)
-      })
-
-      // Handle
-      const handle = new T.Mesh(new T.CylinderGeometry(0.015, 0.015, 0.1, 8), handleMat)
-      handle.rotation.z = Math.PI / 2
-      handle.position.set(dW - 0.12, dH * 0.48, 0.04)
-      g.add(handle)
-      const latch = box3d(0.03, 0.015, 0.06, handleMat)
-      latch.position.set(dW - 0.1, dH * 0.48, 0.03)
-      g.add(latch)
-
-      // Swing arc indicator (thin flat quarter circle at ground)
-      const arcMat = new T.MeshStandardMaterial({ color: 0x999999, roughness: 1, transparent: true, opacity: 0.2, side: T.DoubleSide })
-      const arcGeo = new T.RingGeometry(dW - 0.02, dW, 16, 1, 0, Math.PI / 2)
-      arcGeo.rotateX(-Math.PI / 2)
-      const arc = new T.Mesh(arcGeo, arcMat)
-      arc.position.set(0, 0.005, 0)
-      g.add(arc)
-
-      // Position from 2D coords
-      const x3d = (d.x - OX2D) / GRID2D
-      const z3d = (d.y - OY2D) / GRID2D
-      g.position.set(x3d, 0, z3d)
-      g.rotation.y = -(d.rotation || 0) * Math.PI / 180
-      // Tiny push off the wall plane to eliminate z-fighting (still visible from both sides due to thickness).
-      const off = new T.Vector3(0, 0, 0.006).applyAxisAngle(new T.Vector3(0, 1, 0), g.rotation.y)
-      g.position.add(off)
-      group.add(g)
+ 
+    // ════════════════════════════════════════════════════════════════════════
+    case 'Office': {
+      if (name.includes('chair')) {
+        // Office chair top-down: 5-point star base + seat circle
+        const r0 = Math.min(hw, hd) * 0.88
+        ctx.fillStyle = 'rgba(0,0,0,0.14)'
+        for (let i = 0; i < 5; i++) {
+          const a = (i/5)*Math.PI*2 - Math.PI/2
+          ctx.beginPath(); ctx.moveTo(0, 0)
+          ctx.lineTo(Math.cos(a)*r0, Math.sin(a)*r0)
+          ctx.lineTo(Math.cos(a+Math.PI/14)*r0*0.22, Math.sin(a+Math.PI/14)*r0*0.22)
+          ctx.closePath(); ctx.fill()
+        }
+        // Seat
+        ctx.fillStyle = 'rgba(40,40,50,0.35)'
+        ctx.beginPath(); ctx.arc(0, 0, r0 * 0.55, 0, Math.PI*2); ctx.fill()
+        ctx.fillStyle = 'rgba(255,255,255,0.12)'
+        ctx.beginPath(); ctx.ellipse(-r0*0.12, -r0*0.12, r0*0.22, r0*0.14, -0.5, 0, Math.PI*2); ctx.fill()
+      } else {
+        // Desk
+        ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.lineWidth = 0.8
+        ctx.beginPath(); ctx.roundRect(-hw+3, -hd+3, item.w-6, item.d-6, 3); ctx.stroke()
+        woodGrain(-hw+4, -hd+4, item.w-8, item.d-8, 5)
+ 
+        // Monitor (top area)
+        const numScreens = item.w > 140 ? 2 : 1
+        const scrW = Math.min(item.w*0.42, 58)
+        const scrOffsets = numScreens === 2 ? [-item.w*0.22, item.w*0.22] : [0]
+        for (const sox of scrOffsets) {
+          ctx.fillStyle = 'rgba(15,18,55,0.75)'
+          ctx.beginPath(); ctx.roundRect(sox-scrW/2, -hd+5, scrW, hd*0.5, 4); ctx.fill()
+          // Screen glow
+          ctx.fillStyle = 'rgba(30,60,210,0.3)'
+          ctx.beginPath(); ctx.roundRect(sox-scrW/2+2, -hd+7, scrW-4, hd*0.43, 3); ctx.fill()
+          // Screen highlight
+          ctx.fillStyle = 'rgba(80,110,240,0.2)'
+          ctx.beginPath(); ctx.roundRect(sox-scrW/2+3, -hd+8, scrW*0.4, hd*0.22, 2); ctx.fill()
+          // Stand
+          ctx.fillStyle = 'rgba(20,20,30,0.45)'
+          ctx.beginPath(); ctx.roundRect(sox-4, -hd+hd*0.5+3, 8, 5, 1); ctx.fill()
+        }
+ 
+        // Keyboard
+        ctx.fillStyle = 'rgba(20,20,28,0.28)'
+        ctx.beginPath(); ctx.roundRect(-item.w*0.34, hd*0.16, item.w*0.68, hd*0.3, 3); ctx.fill()
+        // Key rows
+        ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 0.5
+        for (let r = 0; r < 3; r++) {
+          ctx.beginPath()
+          ctx.moveTo(-item.w*0.32, hd*0.21 + r*hd*0.09)
+          ctx.lineTo(item.w*0.32, hd*0.21 + r*hd*0.09)
+          ctx.stroke()
+        }
+ 
+        // Mouse
+        ctx.fillStyle = 'rgba(20,20,28,0.32)'
+        ctx.beginPath(); ctx.ellipse(hw*0.24, hd*0.28, hw*0.09, hd*0.14, 0, 0, Math.PI*2); ctx.fill()
+      }
+      break
     }
-
-    // Windows
-    for (const w of (ovs?.windows || [])) {
-      const glassMat = glassMatBase.clone()
-      const frameMat = frameMatBase.clone()
-      if (w.glassTint) glassMat.color = hex2color(T, w.glassTint)
-      if (w.frameColor) frameMat.color = hex2color(T, w.frameColor)
-
-      const wW = (w.w || 100) / GRID2D
-      // Window size/position independent from room height (clamped to fit).
-      const wH = Math.min(H - 0.2, Math.max(0.4, w.heightM != null ? +w.heightM : 1.2))
-      const wY = Math.max(0, Math.min(H - wH - 0.05, w.sillM != null ? +w.sillM : 0.9))
-      const g = new T.Group()
-
-      // Glass pane
-      const glass = box3d(wW, wH, WALL_THICK + SURFACE_EPS * 2, glassMat)
-      glass.position.set(0, wY + wH / 2, 0)
-      glass.renderOrder = 2
-      if (glass.material) glass.material.depthWrite = false
-      g.add(glass)
-
-      // Frame: top, bottom, left, right
-      const fT = 0.045
-      ;[
-        [0, wY + wH + fT / 2, 0, wW + fT * 2, fT, fT],          // top
-        [0, wY - fT / 2, 0, wW + fT * 2, fT, fT],                // bottom (sill)
-        [-(wW / 2 + fT / 2), wY + wH / 2, 0, fT, wH + fT * 2, fT],  // left
-        [wW / 2 + fT / 2, wY + wH / 2, 0, fT, wH + fT * 2, fT],     // right
-      ].forEach(([x, y, z, fw, fh, fd]) => {
-        const fm = box3d(fw, fh, WALL_THICK + 0.02, frameMat)
-        fm.position.set(x, y, z); g.add(fm)
-      })
-
-      // Center cross divider
-      const mull = new T.MeshStandardMaterial({
-        color: frameMat.color.clone().multiplyScalar(0.92),
-        roughness: 0.45,
-        metalness: 0.25,
-        side: T.DoubleSide
-      })
-      const cv = box3d(0.03, wH, WALL_THICK + 0.02, mull); cv.position.set(0, wY + wH / 2, 0); cv.renderOrder = 1; g.add(cv)
-      const ch = box3d(wW, 0.03, WALL_THICK + 0.02, mull); ch.position.set(0, wY + wH / 2, 0); ch.renderOrder = 1; g.add(ch)
-
-      // Sill ledge
-      const sillMat = new T.MeshStandardMaterial({ color: frameMat.color.clone().multiplyScalar(0.82), roughness: 0.65, metalness: 0.15, side: T.DoubleSide })
-      const sill = box3d(wW + 0.12, 0.04, 0.1, sillMat)
-      sill.position.set(0, wY - 0.02, 0.04)
-      g.add(sill)
-      // Small side trim blocks for depth cues
-      const trim = new T.MeshStandardMaterial({ color: frameMat.color.clone().multiplyScalar(0.9), roughness: 0.6, metalness: 0.2, side: T.DoubleSide })
-      const t1 = box3d(0.035, wH + 0.06, 0.08, trim); t1.position.set(-wW / 2 - 0.035, wY + wH / 2, 0.03); g.add(t1)
-      const t2 = box3d(0.035, wH + 0.06, 0.08, trim); t2.position.set(wW / 2 + 0.035, wY + wH / 2, 0.03); g.add(t2)
-
-      // Position
-      const x3d = (w.x - OX2D) / GRID2D
-      const z3d = (w.y - OY2D) / GRID2D
-      g.position.set(x3d, 0, z3d)
-      g.rotation.y = -(w.rotation || 0) * Math.PI / 180
-      const off = new T.Vector3(0, 0, 0.006).applyAxisAngle(new T.Vector3(0, 1, 0), g.rotation.y)
-      g.position.add(off)
-      group.add(g)
+ 
+    // ════════════════════════════════════════════════════════════════════════
+    case 'Bathroom': {
+      if (name.includes('toilet')) {
+        // Cistern (back tank)
+        ctx.fillStyle = 'rgba(200,228,255,0.6)'
+        ctx.beginPath(); ctx.roundRect(-hw*0.7, -hd+2, hw*1.4, hd*0.38, 3); ctx.fill()
+        ctx.strokeStyle = 'rgba(0,100,200,0.3)'; ctx.lineWidth = 0.8
+        ctx.beginPath(); ctx.roundRect(-hw*0.7, -hd+2, hw*1.4, hd*0.38, 3); ctx.stroke()
+        // Flush button
+        ctx.fillStyle = 'rgba(100,150,205,0.7)'
+        ctx.beginPath(); ctx.ellipse(0, -hd+hd*0.19, 5, 4, 0, 0, Math.PI*2); ctx.fill()
+ 
+        // Bowl (oval)
+        ctx.fillStyle = 'rgba(175,218,252,0.5)'
+        ctx.beginPath(); ctx.ellipse(0, hd*0.24, hw*0.82, hd*0.44, 0, 0, Math.PI*2); ctx.fill()
+        // Seat ring
+        ctx.strokeStyle = 'rgba(190,220,250,0.8)'; ctx.lineWidth = 3
+        ctx.beginPath(); ctx.ellipse(0, hd*0.24, hw*0.74, hd*0.38, 0, 0, Math.PI*2); ctx.stroke()
+        // Inner water
+        ctx.strokeStyle = 'rgba(0,100,200,0.2)'; ctx.lineWidth = 0.7
+        ctx.beginPath(); ctx.ellipse(0, hd*0.24, hw*0.58, hd*0.28, 0, 0, Math.PI*2); ctx.stroke()
+        // Water highlight
+        ctx.fillStyle = 'rgba(210,238,255,0.3)'
+        ctx.beginPath(); ctx.ellipse(-hw*0.18, hd*0.1, hw*0.28, hd*0.1, -0.3, 0, Math.PI*2); ctx.fill()
+ 
+      } else if (name.includes('bathtub') || name.includes('tub')) {
+        const br = Math.min(hw, hd) * 0.44
+        // Rim border
+        ctx.strokeStyle = 'rgba(0,100,180,0.22)'; ctx.lineWidth = 1.2
+        ctx.beginPath(); ctx.roundRect(-hw+3, -hd+3, item.w-6, item.d-6, br); ctx.stroke()
+        // Water fill
+        ctx.fillStyle = 'rgba(175,222,248,0.46)'
+        ctx.beginPath(); ctx.roundRect(-hw+10, -hd+10, item.w-20, item.d-20, br*0.75); ctx.fill()
+        // Water highlight
+        ctx.fillStyle = 'rgba(215,240,255,0.32)'
+        ctx.beginPath(); ctx.ellipse(-hw*0.18, -hd*0.22, hw*0.3, hd*0.13, -0.3, 0, Math.PI*2); ctx.fill()
+        // Faucet end
+        ctx.fillStyle = 'rgba(155,178,205,0.8)'
+        ctx.beginPath(); ctx.arc(-hw+13, 0, 5.5, 0, Math.PI*2); ctx.fill()
+        ctx.fillStyle = 'rgba(180,195,215,0.6)'
+        ctx.beginPath(); ctx.arc(-hw+13, 0, 8, 0, Math.PI*2); ctx.stroke()
+        // Drain (other end)
+        ctx.strokeStyle = 'rgba(100,140,180,0.5)'; ctx.lineWidth = 1
+        ctx.beginPath(); ctx.arc(hw-13, 0, 4, 0, Math.PI*2); ctx.stroke()
+ 
+      } else if (name.includes('shower')) {
+        ctx.fillStyle = 'rgba(188,230,250,0.35)'
+        ctx.beginPath(); ctx.roundRect(-hw+4, -hd+4, item.w-8, item.d-8, 6); ctx.fill()
+        // Tray lines (drainage pattern)
+        ctx.strokeStyle = 'rgba(0,100,180,0.12)'; ctx.lineWidth = 0.5
+        for (let i = 1; i < 4; i++) {
+          ctx.beginPath(); ctx.moveTo(-hw+6, -hd + i*(item.d/4)); ctx.lineTo(hw-6, -hd + i*(item.d/4)); ctx.stroke()
+        }
+        // Drain
+        ctx.strokeStyle = 'rgba(100,140,180,0.6)'; ctx.lineWidth = 1
+        ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI*2); ctx.stroke()
+        ctx.beginPath(); ctx.arc(0, 0, 3, 0, Math.PI*2); ctx.stroke()
+ 
+      } else {
+        // Sink/basin
+        ctx.fillStyle = 'rgba(175,218,250,0.58)'
+        ctx.beginPath(); ctx.roundRect(-hw+8, -hd+8, item.w-16, item.d-16, 10); ctx.fill()
+        ctx.fillStyle = 'rgba(218,240,255,0.32)'
+        ctx.beginPath(); ctx.roundRect(-hw+13, -hd+13, item.w-26, item.d-26, 8); ctx.fill()
+        // Drain
+        ctx.fillStyle = 'rgba(100,155,200,0.75)'
+        ctx.beginPath(); ctx.arc(0, hd-14, 4.5, 0, Math.PI*2); ctx.fill()
+        // Tap handles
+        for (const sx of [-1,1]) {
+          ctx.fillStyle = 'rgba(135,160,195,0.7)'
+          ctx.beginPath(); ctx.arc(sx*8, hd-14, 3.5, 0, Math.PI*2); ctx.fill()
+        }
+      }
+      break
     }
-
-    // Curtains
-    for (const c of (ovs?.curtains || [])) {
-      const cW = (c.w || 120) / GRID2D
-      const cH = H * 0.85
-      const g = new T.Group()
-      const style = (c.style || 'standard').toLowerCase()
-      const op = style === 'sheer' ? 0.65 : style === 'blackout' ? 1 : 0.9
-      const cMat = curtainMat(c.color, op)
-
-      // Two curtain panels with drape shape using box with scale
-      const panelW = cW * 0.42
-      ;[-cW * 0.26, cW * 0.26].forEach((ox) => {
-        const panel = new T.Mesh(new T.BoxGeometry(panelW, cH, 0.03), cMat)
-        panel.position.set(ox, cH / 2, 0)
-        // Slight taper toward bottom
-        panel.scale.set(1, 1, 1)
-        g.add(panel)
-      })
-
-      // Curtain rod
-      const rod = new T.Mesh(new T.CylinderGeometry(0.015, 0.015, cW + 0.14, 8),
-        new T.MeshStandardMaterial({ color: 0x888888, roughness: 0.2, metalness: 0.8 }))
-      rod.rotation.z = Math.PI / 2
-      rod.position.set(0, cH + 0.02, 0)
-      g.add(rod)
-
-      // Rod end caps
-      ;[-cW / 2 - 0.07, cW / 2 + 0.07].forEach(ex => {
-        const cap = new T.Mesh(new T.SphereGeometry(0.025, 8, 8),
-          new T.MeshStandardMaterial({ color: 0x777777, metalness: 0.9, roughness: 0.1 }))
-        cap.position.set(ex, cH + 0.02, 0)
-        g.add(cap)
-      })
-
-      const x3d = (c.x - OX2D) / GRID2D
-      const z3d = (c.y - OY2D) / GRID2D
-      g.position.set(x3d, 0, z3d)
-      g.rotation.y = -(c.rotation || 0) * Math.PI / 180
-      const off = new T.Vector3(0, 0, 0.006).applyAxisAngle(new T.Vector3(0, 1, 0), g.rotation.y)
-      g.position.add(off)
-      group.add(g)
-    }
-  }
-
-  const raycastFloor = (T, cx, cy) => {
-    const rdr = rdrRef.current, cam = camRef.current; if (!rdr || !cam) return null
-    const rect = rdr.domElement.getBoundingClientRect()
-    const ndc = new T.Vector2(((cx - rect.left) / rect.width) * 2 - 1, -((cy - rect.top) / rect.height) * 2 + 1)
-    const ray = new T.Raycaster(); ray.setFromCamera(ndc, cam)
-    const plane = new T.Plane(new T.Vector3(0, 1, 0), 0)
-    const target = new T.Vector3()
-    const hit = ray.ray.intersectPlane(plane, target)
-    return hit ? target : null
-  }
-
-  const ensureDragProxy = (T, fg, mesh) => {
-    // Create a lightweight proxy box for dragging heavy models.
-    const box3 = new T.Box3().setFromObject(mesh)
-    const sz = new T.Vector3(); box3.getSize(sz)
-    if (!Number.isFinite(sz.x) || !Number.isFinite(sz.z) || sz.x <= 0 || sz.z <= 0) return null
-    const geo = new T.BoxGeometry(Math.max(0.08, sz.x), 0.02, Math.max(0.08, sz.z))
-    const mat = new T.MeshStandardMaterial({ color: 0x8b5cf6, roughness: 0.9, metalness: 0, transparent: true, opacity: 0.25 })
-    const proxy = new T.Mesh(geo, mat)
-    proxy.position.set(mesh.position.x, 0.01, mesh.position.z)
-    proxy.renderOrder = 10
-    fg.add(proxy)
-    return proxy
-  }
-
-  const onPointerDown = useCallback(e => {
-    ptrRef.current = { down: true, moved: false, x: e.clientX, y: e.clientY, button: e.button }
-    if (mountRef.current) mountRef.current.setPointerCapture?.(e.pointerId)
-    e.preventDefault()
-    if (e.button !== 0) return
-    const T = TRef.current; const rdr = rdrRef.current; const cam = camRef.current; const fg = fGroupRef.current
-    if (!T || !rdr || !cam || !fg) return
-    const rect = rdr.domElement.getBoundingClientRect()
-    const ndc = new T.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
-    const ray = new T.Raycaster(); ray.setFromCamera(ndc, cam)
-    const hits = ray.intersectObjects(fg.children, true)
-    if (hits.length) {
-      let o = hits[0].object; while (o.parent && o.parent !== fg) o = o.parent
-      if (o.userData?.itemId) {
-        setSelectedId(o.userData.itemId)
-        const floorPt = raycastFloor(T, e.clientX, e.clientY)
-        if (floorPt) {
-          // Use a proxy while dragging to avoid freezes with heavy meshes.
-          const proxy = ensureDragProxy(T, fg, o) || null
-          o.visible = false
-          dragFurnRef.current = {
-            itemId: o.userData.itemId,
-            mesh: o,
-            proxy,
-            offsetX: o.position.x - floorPt.x,
-            offsetZ: o.position.z - floorPt.z,
+ 
+    // ════════════════════════════════════════════════════════════════════════
+    case 'Kitchen': {
+      ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.lineWidth = 0.8
+      ctx.beginPath(); ctx.roundRect(-hw+4, -hd+4, item.w-8, item.d-8, 4); ctx.stroke()
+ 
+      if (name.includes('stove') || name.includes('cooktop') || name.includes('oven') || name.includes('range')) {
+        // Cooktop surface
+        ctx.fillStyle = 'rgba(22,22,22,0.14)'
+        ctx.beginPath(); ctx.roundRect(-hw+5, -hd+5, item.w-10, item.d-10, 3); ctx.fill()
+ 
+        const bPos = [
+          [-hw*0.44, -hd*0.28], [hw*0.44, -hd*0.28],
+          [-hw*0.44,  hd*0.22], [hw*0.44,  hd*0.22]
+        ]
+        for (const [bx, by] of bPos) {
+          const br = Math.min(hw,hd)*0.185
+          // Grate outer
+          ctx.strokeStyle = 'rgba(15,15,15,0.55)'; ctx.lineWidth = 1.4
+          ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI*2); ctx.stroke()
+          // Middle ring
+          ctx.lineWidth = 0.8
+          ctx.beginPath(); ctx.arc(bx, by, br*0.55, 0, Math.PI*2); ctx.stroke()
+          // Centre igniter
+          ctx.fillStyle = 'rgba(10,10,10,0.65)'
+          ctx.beginPath(); ctx.arc(bx, by, br*0.17, 0, Math.PI*2); ctx.fill()
+          // Spokes (4)
+          ctx.strokeStyle = 'rgba(15,15,15,0.4)'; ctx.lineWidth = 1
+          for (let a = 0; a < 4; a++) {
+            ctx.beginPath()
+            ctx.moveTo(bx + Math.cos(a*Math.PI/2)*br*0.22, by + Math.sin(a*Math.PI/2)*br*0.22)
+            ctx.lineTo(bx + Math.cos(a*Math.PI/2)*br*0.92, by + Math.sin(a*Math.PI/2)*br*0.92)
+            ctx.stroke()
           }
         }
+        // Control knobs (bottom row)
+        ctx.fillStyle = 'rgba(20,20,20,0.45)'
+        for (let i = 0; i < 4; i++) {
+          const kx = -hw*0.5 + i*(hw*0.33)
+          ctx.beginPath(); ctx.arc(kx, hd-8, 3.5, 0, Math.PI*2); ctx.fill()
+          ctx.strokeStyle = 'rgba(80,80,80,0.4)'; ctx.lineWidth = 0.5
+          ctx.beginPath(); ctx.arc(kx, hd-8, 5.2, 0, Math.PI*2); ctx.stroke()
+        }
+ 
+      } else if (name.includes('sink')) {
+        ctx.fillStyle = 'rgba(165,210,232,0.5)'
+        ctx.beginPath(); ctx.roundRect(-hw+10, -hd+7, item.w-20, item.d-14, 7); ctx.fill()
+        ctx.strokeStyle = 'rgba(0,100,180,0.3)'; ctx.lineWidth = 0.8
+        ctx.beginPath(); ctx.roundRect(-hw+10, -hd+7, item.w-20, item.d-14, 7); ctx.stroke()
+        // Water highlight
+        ctx.fillStyle = 'rgba(210,238,255,0.3)'
+        ctx.beginPath(); ctx.ellipse(-hw*0.12, -hd*0.08, hw*0.25, hd*0.12, -0.3, 0, Math.PI*2); ctx.fill()
+        // Drain
+        ctx.fillStyle = 'rgba(100,155,200,0.75)'
+        ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI*2); ctx.fill()
+        // Tap
+        ctx.fillStyle = 'rgba(140,162,190,0.72)'
+        ctx.beginPath(); ctx.roundRect(-4, -hd+11, 8, 6, 2); ctx.fill()
+ 
+      } else if (name.includes('fridge') || name.includes('refrigerator')) {
+        // Fridge: freezer top, main below
+        ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 1
+        ctx.beginPath(); ctx.moveTo(-hw+4, -hd*0.28); ctx.lineTo(hw-4, -hd*0.28); ctx.stroke()
+        // Freezer surface
+        ctx.fillStyle = 'rgba(255,255,255,0.14)'
+        ctx.beginPath(); ctx.roundRect(-hw*0.68, -hd*0.88, hw*1.36*0.65, hd*0.56, 2); ctx.fill()
+        // Main door
+        ctx.fillStyle = 'rgba(255,255,255,0.1)'
+        ctx.beginPath(); ctx.roundRect(-hw*0.68, -hd*0.24, hw*1.36*0.65, hd*0.98, 2); ctx.fill()
+        // Handles
+        for (const hy of [-hd*0.58, hd*0.3]) {
+          ctx.fillStyle = 'rgba(155,155,145,0.72)'
+          ctx.beginPath(); ctx.roundRect(-hw*0.6, hy-3, hw*0.28, 6, 2); ctx.fill()
+        }
+ 
+      } else if (name.includes('island') || name.includes('counter')) {
+        woodGrain(-hw+5, -hd+5, item.w-10, item.d-10, 6)
+        ctx.fillStyle = 'rgba(255,255,255,0.14)'
+        ctx.beginPath(); ctx.roundRect(-hw*0.68, -hd*0.62, hw*0.8, hd*0.28, 2); ctx.fill()
+ 
+      } else {
+        woodGrain(-hw+5, -hd+5, item.w-10, item.d-10, 5)
+        ctx.strokeStyle = 'rgba(0,0,0,0.08)'; ctx.lineWidth = 0.6
+        ctx.beginPath(); ctx.moveTo(-hw+6, -hd+6); ctx.lineTo(hw-6, -hd+6); ctx.stroke()
       }
+      break
+    }
+ 
+    // ════════════════════════════════════════════════════════════════════════
+    case 'Lighting': {
+      const r0 = Math.min(hw, hd)
+      // Outer glow halo
+      const grad = ctx.createRadialGradient(0, 0, r0*0.2, 0, 0, r0*0.95)
+      grad.addColorStop(0, 'rgba(255,248,200,0.88)')
+      grad.addColorStop(0.45, 'rgba(253,186,116,0.52)')
+      grad.addColorStop(0.75, 'rgba(253,186,116,0.22)')
+      grad.addColorStop(1, 'rgba(253,186,116,0)')
+      ctx.fillStyle = grad
+      ctx.beginPath(); ctx.arc(0, 0, r0*0.95, 0, Math.PI*2); ctx.fill()
+      // Shade ring
+      ctx.strokeStyle = 'rgba(200,140,60,0.3)'; ctx.lineWidth = 1
+      ctx.beginPath(); ctx.arc(0, 0, r0*0.55, 0, Math.PI*2); ctx.stroke()
+      // Bright bulb centre
+      ctx.fillStyle = 'rgba(255,252,220,1.0)'
+      ctx.beginPath(); ctx.arc(0, 0, r0*0.22, 0, Math.PI*2); ctx.fill()
+      ctx.fillStyle = 'rgba(255,255,255,1.0)'
+      ctx.beginPath(); ctx.arc(0, 0, r0*0.1, 0, Math.PI*2); ctx.fill()
+      // Rays (12)
+      ctx.strokeStyle = 'rgba(253,200,80,0.18)'; ctx.lineWidth = 0.7
+      for (let a = 0; a < Math.PI*2; a += Math.PI/6) {
+        ctx.beginPath()
+        ctx.moveTo(Math.cos(a)*r0*0.6, Math.sin(a)*r0*0.6)
+        ctx.lineTo(Math.cos(a)*r0*0.85, Math.sin(a)*r0*0.85)
+        ctx.stroke()
+      }
+      break
+    }
+ 
+    // ════════════════════════════════════════════════════════════════════════
+    case 'Living Room': {
+      if (name.includes('tv') || name.includes('television')) {
+        // Bezel
+        ctx.fillStyle = 'rgba(6,6,18,0.82)'
+        ctx.beginPath(); ctx.roundRect(-hw+3, -hd+3, item.w-6, item.d-6, 3); ctx.fill()
+        // Screen
+        ctx.fillStyle = 'rgba(8,16,72,0.58)'
+        ctx.beginPath(); ctx.roundRect(-hw+5, -hd+5, item.w-10, item.d-8, 2); ctx.fill()
+        // Screen content glow
+        ctx.fillStyle = 'rgba(25,50,180,0.22)'
+        ctx.beginPath(); ctx.roundRect(-hw+6, -hd+6, (item.w-12)*0.55, (item.d-10)*0.45, 2); ctx.fill()
+        // Reflection glare
+        ctx.fillStyle = 'rgba(100,130,220,0.12)'
+        ctx.beginPath(); ctx.roundRect(-hw+7, -hd+7, (item.w-14)*0.38, (item.d-12)*0.32, 2); ctx.fill()
+        // Power LED
+        ctx.fillStyle = 'rgba(0,148,255,0.8)'
+        ctx.beginPath(); ctx.arc(hw-8, hd-6, 2.5, 0, Math.PI*2); ctx.fill()
+        // Stand base
+        ctx.strokeStyle = 'rgba(40,40,50,0.4)'; ctx.lineWidth = 1
+        ctx.beginPath(); ctx.moveTo(-hw*0.25, hd-3); ctx.lineTo(hw*0.25, hd-3); ctx.stroke()
+ 
+      } else if (name.includes('rug') || name.includes('carpet') || name.includes('mat')) {
+        // Rug with decorative border and medallion
+        ctx.strokeStyle = 'rgba(0,0,0,0.22)'; ctx.lineWidth = 1.5
+        ctx.beginPath(); ctx.roundRect(-hw+5, -hd+5, item.w-10, item.d-10, 5); ctx.stroke()
+        // Secondary border
+        ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth = 0.8
+        ctx.beginPath(); ctx.roundRect(-hw+10, -hd+10, item.w-20, item.d-20, 3); ctx.stroke()
+        // Third border
+        ctx.strokeStyle = 'rgba(0,0,0,0.06)'; ctx.lineWidth = 0.6
+        ctx.beginPath(); ctx.roundRect(-hw+15, -hd+15, item.w-30, item.d-30, 2); ctx.stroke()
+        // Medallion
+        ctx.strokeStyle = 'rgba(0,0,0,0.08)'; ctx.lineWidth = 0.7
+        ctx.beginPath(); ctx.ellipse(0, 0, hw*0.32, hd*0.32, 0, 0, Math.PI*2); ctx.stroke()
+        ctx.beginPath(); ctx.ellipse(0, 0, hw*0.18, hd*0.18, 0, 0, Math.PI*2); ctx.stroke()
+        // Cross lines
+        ctx.beginPath(); ctx.moveTo(-hw+18, 0); ctx.lineTo(hw-18, 0); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(0, -hd+18); ctx.lineTo(0, hd-18); ctx.stroke()
+        // Diagonal accents
+        ctx.strokeStyle = 'rgba(0,0,0,0.05)'
+        ctx.beginPath(); ctx.moveTo(-hw*0.52, -hd*0.52); ctx.lineTo(hw*0.52, hd*0.52); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(hw*0.52, -hd*0.52); ctx.lineTo(-hw*0.52, hd*0.52); ctx.stroke()
+ 
+      } else if (name.includes('fireplace') || name.includes('fire')) {
+        ctx.fillStyle = 'rgba(75,65,50,0.35)'
+        ctx.beginPath(); ctx.roundRect(-hw+4, -hd+4, item.w-8, item.d-8, 4); ctx.fill()
+        // Opening (dark recess)
+        ctx.fillStyle = 'rgba(10,7,4,0.72)'
+        ctx.beginPath(); ctx.roundRect(-hw*0.58, -hd*0.85, hw*1.16, hd*1.38, 4); ctx.fill()
+        // Fire glow
+        const fireGrad = ctx.createRadialGradient(0, hd*0.05, 0, 0, hd*0.05, hw*0.44)
+        fireGrad.addColorStop(0, 'rgba(255,230,100,0.85)')
+        fireGrad.addColorStop(0.4, 'rgba(255,120,20,0.65)')
+        fireGrad.addColorStop(1, 'rgba(200,50,0,0)')
+        ctx.fillStyle = fireGrad
+        ctx.beginPath(); ctx.ellipse(0, hd*0.05, hw*0.44, hd*0.32, 0, 0, Math.PI*2); ctx.fill()
+        // Flame tips
+        for (let i = 0; i < 5; i++) {
+          const fx = (Math.random()-0.5)*hw*0.5
+          ctx.fillStyle = `rgba(255,${140+Math.floor(Math.random()*80)},0,0.55)`
+          ctx.beginPath(); ctx.arc(fx, -hd*0.06+(Math.random()-0.5)*hd*0.2, 4, 0, Math.PI*2); ctx.fill()
+        }
+        // Mantel line
+        ctx.strokeStyle = 'rgba(100,80,45,0.5)'; ctx.lineWidth = 1.5
+        ctx.beginPath(); ctx.moveTo(-hw+3, -hd+4); ctx.lineTo(hw-3, -hd+4); ctx.stroke()
+ 
+      } else {
+        ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth = 0.7
+        ctx.beginPath(); ctx.roundRect(-hw+6, -hd+6, item.w-12, item.d-12, 3); ctx.stroke()
+      }
+      break
+    }
+ 
+    // ════════════════════════════════════════════════════════════════════════
+    case 'Decor': {
+      if (name.includes('plant') || name.includes('tree') || name.includes('flower')) {
+        const pr = Math.min(hw, hd)
+        // Pot (bottom)
+        ctx.fillStyle = 'rgba(140,88,48,0.6)'
+        ctx.beginPath(); ctx.ellipse(0, hd*0.3, pr*0.32, pr*0.2, 0, 0, Math.PI*2); ctx.fill()
+        // Soil
+        ctx.fillStyle = 'rgba(35,18,5,0.48)'
+        ctx.beginPath(); ctx.ellipse(0, hd*0.28, pr*0.28, pr*0.16, 0, 0, Math.PI*2); ctx.fill()
+        // Canopy (layered)
+        ctx.fillStyle = 'rgba(28,120,50,0.25)'
+        ctx.beginPath(); ctx.arc(0, 0, pr*0.54, 0, Math.PI*2); ctx.fill()
+        ctx.strokeStyle = 'rgba(28,125,48,0.6)'; ctx.lineWidth = 1.6
+        ctx.beginPath(); ctx.arc(0, 0, pr*0.52, 0, Math.PI*2); ctx.stroke()
+        ctx.fillStyle = 'rgba(35,148,55,0.35)'
+        ctx.beginPath(); ctx.arc(0, 0, pr*0.35, 0, Math.PI*2); ctx.fill()
+        // Leaf highlights
+        for (const [lx,ly] of [[-pr*0.18,-pr*0.28],[pr*0.2,-pr*0.22],[-pr*0.25,pr*0.05],[pr*0.12,pr*0.2]]) {
+          ctx.fillStyle = 'rgba(60,180,80,0.2)'
+          ctx.beginPath(); ctx.ellipse(lx, ly, pr*0.14, pr*0.09, Math.atan2(ly,lx), 0, Math.PI*2); ctx.fill()
+        }
+        // Stems
+        ctx.strokeStyle = 'rgba(28,120,45,0.7)'; ctx.lineWidth = 1.5
+        for (const [tx,ty] of [[0,-pr*0.2],[-pr*0.3,-pr*0.28],[pr*0.28,-pr*0.25]]) {
+          ctx.beginPath(); ctx.moveTo(0, pr*0.22); ctx.lineTo(tx, ty); ctx.stroke()
+        }
+      } else if (name.includes('vase')) {
+        // Vase: narrow neck, round body
+        ctx.fillStyle = 'rgba(180,140,100,0.55)'
+        ctx.beginPath()
+        ctx.ellipse(0, hd*0.22, hw*0.72, hd*0.62, 0, 0, Math.PI*2)
+        ctx.fill()
+        ctx.beginPath()
+        ctx.ellipse(0, -hd*0.52, hw*0.28, hd*0.22, 0, 0, Math.PI*2)
+        ctx.fill()
+        ctx.fillStyle = 'rgba(220,185,140,0.3)'
+        ctx.beginPath(); ctx.ellipse(-hw*0.2, 0, hw*0.18, hd*0.22, -0.4, 0, Math.PI*2); ctx.fill()
+      } else {
+        ctx.strokeStyle = 'rgba(0,0,0,0.15)'; ctx.lineWidth = 0.8
+        ctx.beginPath(); ctx.roundRect(-hw+4, -hd+4, item.w-8, item.d-8, 3); ctx.stroke()
+      }
+      break
+    }
+ 
+    // ════════════════════════════════════════════════════════════════════════
+    case 'Outdoor': {
+      if (name.includes('chair') || name.includes('lounger')) {
+        ctx.fillStyle = 'rgba(180,160,100,0.32)'
+        ctx.beginPath(); ctx.roundRect(-hw+4, -hd+4, item.w-8, item.d-8, 8); ctx.fill()
+        // Slats
+        ctx.strokeStyle = 'rgba(120,90,50,0.35)'; ctx.lineWidth = 1
+        const numSlats = Math.round(item.d / 14)
+        for (let i = 0; i < numSlats; i++) {
+          const sy = -hd + 6 + i * ((item.d-12)/numSlats)
+          ctx.beginPath(); ctx.moveTo(-hw+5, sy); ctx.lineTo(hw-5, sy); ctx.stroke()
+        }
+      } else {
+        ctx.strokeStyle = 'rgba(100,130,80,0.35)'; ctx.lineWidth = 1
+        ctx.beginPath(); ctx.roundRect(-hw+4, -hd+4, item.w-8, item.d-8, 5); ctx.stroke()
+      }
+      break
+    }
+ 
+    // ════════════════════════════════════════════════════════════════════════
+    case 'Custom':
+      ctx.strokeStyle = 'rgba(139,92,246,0.6)'; ctx.lineWidth = 1.5; ctx.setLineDash([4,3])
+      ctx.beginPath(); ctx.rect(-hw+4, -hd+4, item.w-8, item.d-8); ctx.stroke(); ctx.setLineDash([])
+      ctx.strokeStyle = 'rgba(139,92,246,0.3)'; ctx.lineWidth = 0.8
+      ctx.beginPath(); ctx.moveTo(-hw+4,-hd+4); ctx.lineTo(hw-4,hd-4); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(hw-4,-hd+4); ctx.lineTo(-hw+4,hd-4); ctx.stroke()
+      break
+ 
+    default: break
+  }
+ 
+  ctx.restore()
+}
+
+function drawTopPreviewImage(ctx, url, item, imgCache) {
+  if (!url) return false
+  const img = imgCache?.[url]
+  if (!img || !img.complete || img.naturalWidth <= 0) return false
+  const w = item.w, d = item.d
+  const pad = Math.max(3, Math.min(10, Math.min(w, d) * 0.06))
+  // Draw inside the item's bounds (already rotated by caller).
+  ctx.save()
+  ctx.globalAlpha = 0.98
+  ctx.imageSmoothingEnabled = true
+  ctx.drawImage(img, -w / 2 + pad, -d / 2 + pad, w - pad * 2, d - pad * 2)
+  ctx.restore()
+  return true
+}
+
+function draw(canvas, state) {
+  const { cfg, items, overlays, selected, selectedOverlay, zoom, panX, panY, topDownCache, imgCache, modelThumbById } = state
+  const ctx = canvas.getContext('2d')
+  const dpr = window.devicePixelRatio || 1
+  ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width,canvas.height); ctx.restore()
+  ctx.save()
+  ctx.setTransform(dpr*zoom, 0, 0, dpr*zoom, dpr*panX, dpr*panY)
+  ctx.imageSmoothingEnabled = false
+  const CW=canvas.width/dpr, CH=canvas.height/dpr
+  const vx=-panX/zoom-20, vy=-panY/zoom-20, vw=CW/zoom+40, vh=CH/zoom+40
+  const cfg_w=cfg.width||5, cfg_d=cfg.depth||4
+  const shape=cfg.shape||'rectangle'
+  const RW=(shape==='square'?Math.min(cfg_w,cfg_d):cfg_w)*GRID
+  const RD=(shape==='square'?Math.min(cfg_w,cfg_d):cfg_d)*GRID
+
+  // Background + grid
+  ctx.fillStyle='#dde3ee'; ctx.fillRect(vx,vy,vw,vh)
+  const gx0=Math.floor(vx/GRID)*GRID, gy0=Math.floor(vy/GRID)*GRID
+  ctx.strokeStyle='rgba(148,163,200,0.18)'; ctx.lineWidth=0.5
+  for(let x=gx0;x<vx+vw;x+=GRID){ctx.beginPath();ctx.moveTo(x,vy);ctx.lineTo(x,vy+vh);ctx.stroke()}
+  for(let y=gy0;y<vy+vh;y+=GRID){ctx.beginPath();ctx.moveTo(vx,y);ctx.lineTo(vx+vw,y);ctx.stroke()}
+  ctx.strokeStyle='rgba(100,130,200,0.22)'; ctx.lineWidth=0.9
+  for(let x=gx0;x<vx+vw;x+=GRID*5){ctx.beginPath();ctx.moveTo(x,vy);ctx.lineTo(x,vy+vh);ctx.stroke()}
+  for(let y=gy0;y<vy+vh;y+=GRID*5){ctx.beginPath();ctx.moveTo(vx,y);ctx.lineTo(vx+vw,y);ctx.stroke()}
+
+  const poly=roomPoly(cfg)
+  const tracePoly=()=>{ctx.beginPath();poly.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y));ctx.closePath()}
+
+  // Room shadow
+  ctx.save(); ctx.shadowColor='rgba(0,0,0,0.22)'; ctx.shadowBlur=24; ctx.shadowOffsetX=5; ctx.shadowOffsetY=7
+  tracePoly(); ctx.fillStyle='#fff'; ctx.fill(); ctx.restore()
+
+  // Floor
+  ctx.save(); tracePoly(); ctx.clip()
+  ctx.fillStyle=FLOOR_COL[cfg.floorTexture]||'#c8a46e'; ctx.fill()
+  if(cfg.floorTexture==='wood'){
+    const ph=12; ctx.strokeStyle='rgba(100,60,20,0.2)'; ctx.lineWidth=0.6
+    for(let y=OY;y<OY+RD+ph;y+=ph){ctx.beginPath();ctx.moveTo(OX,y);ctx.lineTo(OX+RW,y);ctx.stroke()}
+    ctx.strokeStyle='rgba(100,60,20,0.1)'; ctx.lineWidth=0.4
+    for(let y=OY,row=0;y<OY+RD;y+=ph,row++){
+      const off=row%2?0:RW*0.33
+      for(let x=OX+off;x<OX+RW;x+=RW*0.45){ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y+ph);ctx.stroke()}
+    }
+  } else if(cfg.floorTexture==='tile'){
+    const ts=22; ctx.strokeStyle='rgba(130,130,130,0.3)'; ctx.lineWidth=0.6
+    for(let x=OX;x<=OX+RW;x+=ts){ctx.beginPath();ctx.moveTo(x,OY);ctx.lineTo(x,OY+RD);ctx.stroke()}
+    for(let y=OY;y<=OY+RD;y+=ts){ctx.beginPath();ctx.moveTo(OX,y);ctx.lineTo(OX+RW,y);ctx.stroke()}
+  } else if(cfg.floorTexture==='marble'){
+    ctx.strokeStyle='rgba(160,140,120,0.22)'; ctx.lineWidth=0.8
+    for(let x=OX;x<OX+RW;x+=35){ctx.beginPath();ctx.moveTo(x,OY);ctx.lineTo(x,OY+RD);ctx.stroke()}
+    for(let y=OY;y<OY+RD;y+=35){ctx.beginPath();ctx.moveTo(OX,y);ctx.lineTo(OX+RW,y);ctx.stroke()}
+  } else if(cfg.floorTexture==='carpet'){
+    ctx.fillStyle='rgba(0,0,0,0.05)'
+    for(let x=OX;x<OX+RW;x+=8) for(let y2=OY;y2<OY+RD;y2+=8){ctx.beginPath();ctx.arc(x+4,y2+4,1,0,Math.PI*2);ctx.fill()}
+  } else if(cfg.floorTexture==='concrete'){
+    ctx.strokeStyle='rgba(100,100,100,0.1)'; ctx.lineWidth=0.5
+    for(let x=OX;x<OX+RW;x+=40){ctx.beginPath();ctx.moveTo(x,OY);ctx.lineTo(x,OY+RD);ctx.stroke()}
+    for(let y=OY;y<OY+RD;y+=40){ctx.beginPath();ctx.moveTo(OX,y);ctx.lineTo(OX+RW,y);ctx.stroke()}
+  }
+  ctx.restore()
+
+  // Walls
+  tracePoly(); ctx.strokeStyle='#0f172a'; ctx.lineWidth=14; ctx.lineJoin='round'; ctx.stroke()
+  tracePoly(); ctx.strokeStyle=cfg.wallColor||'#F5F5F0'; ctx.lineWidth=10; ctx.stroke()
+  tracePoly(); ctx.strokeStyle='rgba(0,0,0,0.5)'; ctx.lineWidth=1.5; ctx.stroke()
+
+  // Dimensions
+  ctx.fillStyle='#475569'; ctx.textAlign='center'; ctx.textBaseline='middle'
+  ctx.font='600 11px DM Sans,system-ui,sans-serif'
+  ctx.fillText(`${cfg_w} m`,OX+RW/2,OY-22)
+  ctx.save(); ctx.translate(OX-28,OY+RD/2); ctx.rotate(-Math.PI/2); ctx.fillText(`${cfg_d} m`,0,0); ctx.restore()
+
+  // Compass
+  const cpx=OX+RW+38, cpy=OY+24
+  ctx.save(); ctx.font='600 9px DM Sans,sans-serif'; ctx.textAlign='center'
+  ctx.fillStyle='#dc2626'; ctx.fillText('N',cpx,cpy-15)
+  ctx.fillStyle='#94a3b8'; ctx.fillText('S',cpx,cpy+19); ctx.fillText('W',cpx-17,cpy+4); ctx.fillText('E',cpx+17,cpy+4)
+  ctx.beginPath(); ctx.moveTo(cpx,cpy-10); ctx.lineTo(cpx+4,cpy+3); ctx.lineTo(cpx,cpy); ctx.closePath(); ctx.fillStyle='#dc2626'; ctx.fill()
+  ctx.beginPath(); ctx.moveTo(cpx,cpy+10); ctx.lineTo(cpx-4,cpy-3); ctx.lineTo(cpx,cpy); ctx.closePath(); ctx.fillStyle='#94a3b8'; ctx.fill()
+  ctx.restore()
+
+  // Overlays
+  if(overlays){
+    ;(overlays.doors||[]).forEach(d=>drawDoor(ctx,d,selectedOverlay?.id===d.id))
+    ;(overlays.windows||[]).forEach(w=>drawWindow(ctx,w,selectedOverlay?.id===w.id))
+    ;(overlays.curtains||[]).forEach(c=>drawCurtain(ctx,c,selectedOverlay?.id===c.id))
+  }
+
+  // Furniture
+  ;(items||[]).forEach(item=>{
+    if(item.x==null||item.y==null) return
+    const sel=item.id===selected; ctx.save()
+    ctx.translate(item.x+item.w/2, item.y+item.d/2)
+    ctx.rotate((item.rotation||0)*Math.PI/180)
+    ctx.shadowColor=sel?'rgba(59,130,246,0.4)':'rgba(0,0,0,0.2)'; ctx.shadowBlur=sel?16:8
+    ctx.shadowOffsetX=2; ctx.shadowOffsetY=3
+    const base=item.color||CAT_COLOR[item.category]||'#93b4fd'
+
+    // If we have a real top-view preview image, draw it first (more realistic than shapes).
+    const previewUrl = item.topViewUrl || item.thumbnailUrl || item.previewUrl || modelThumbById?.[item.modelId] || null
+    // Add a soft ground shadow even when using an image preview (so it feels "finished")
+    let drewImg = false
+    if (previewUrl) {
+      ctx.save()
+      ctx.shadowColor = sel ? 'rgba(59,130,246,0.35)' : 'rgba(0,0,0,0.22)'
+      ctx.shadowBlur = sel ? 18 : 12
+      ctx.shadowOffsetX = 2
+      ctx.shadowOffsetY = 3
+      // Use the silhouette as shadow-caster
+      ctx.fillStyle = 'rgba(0,0,0,0.001)'
+      traceFurnitureSilhouette(ctx, item)
+      ctx.fill()
+      ctx.restore()
+      drewImg = drawTopPreviewImage(ctx, previewUrl, item, imgCache)
+    }
+
+    // Custom 3D model — draw true top-down silhouette (no forced rectangle base)
+    const tdData = item.customModelId && topDownCache ? topDownCache[item.customModelId] : null
+    if (tdData?.pts2d?.length) {
+      // If we already drew a preview image, keep the silhouette subtle as a hit/outline aid.
+      drawModelTopDown(ctx, item, tdData, {
+        fillStyle: drewImg ? 'rgba(0,0,0,0.02)' : (base + '26'),
+        strokeStyle: sel ? '#3b82f6' : (drewImg ? 'rgba(0,0,0,0.18)' : (base + 'aa')),
+        lineWidth: sel ? 2.5 : (drewImg ? 1.2 : 1.6),
+        rotationDeg: 0,
+      })
     } else {
-      setSelectedId(null)
-    }
-  }, []) // eslint-disable-line
-
-  const onPointerMove = useCallback(e => {
-    const p = ptrRef.current; if (!p.down) return
-    const dx = e.clientX - p.x, dy = e.clientY - p.y
-    p.moved = true; p.x = e.clientX; p.y = e.clientY
-
-    if (dragFurnRef.current) {
-      // Throttle heavy raycasts & updates to one per animation frame.
-      const T = TRef.current; if (!T) return
-      dragFurnRef.current.lastClientX = e.clientX
-      dragFurnRef.current.lastClientY = e.clientY
-      if (!dragRafRef.current) {
-        dragRafRef.current = requestAnimationFrame(() => {
-          dragRafRef.current = null
-          const d = dragFurnRef.current
-          if (!d) return
-          const floorPt = raycastFloor(T, d.lastClientX, d.lastClientY)
-          if (!floorPt) return
-          const candidateX = floorPt.x + d.offsetX
-          const candidateZ = floorPt.z + d.offsetZ
-          const item = itemsRef.current.find(i => i.id === d.itemId)
-          const bounds = item ? clamp3DPosition(item, cfgRef.current, candidateX, candidateZ) : { x: candidateX, z: candidateZ }
-          if (d.proxy) {
-            d.proxy.position.x = bounds.x
-            d.proxy.position.z = bounds.z
-          }
-          d.pendingX3d = bounds.x
-          d.pendingZ3d = bounds.z
-          d.hasPending = true
-        })
-      }
-      return
-    }
-
-    if (p.button === 0 && !e.shiftKey) {
-      orbitRef.current.theta -= dx * 0.007
-      orbitRef.current.phi = Math.max(0.05, Math.min(Math.PI * 0.48, orbitRef.current.phi - dy * 0.007))
-    } else {
-      const sc = orbitRef.current.radius * 0.0014
-      orbitRef.current.tx -= dx * sc * Math.cos(orbitRef.current.theta)
-      orbitRef.current.tz -= dx * sc * Math.sin(orbitRef.current.theta)
-      orbitRef.current.ty += dy * sc
-    }
-    applyOrbit(camRef.current, orbitRef.current)
-  }, []) // eslint-disable-line
-
-  const onPointerUp = useCallback(e => {
-    const p = ptrRef.current
-    if (dragFurnRef.current) {
-      // Commit buffered 3D position to items state (and back-convert to exact 2D coords)
-      if (dragFurnRef.current.hasPending) {
-        const { itemId, pendingX3d, pendingZ3d } = dragFurnRef.current
-        setItems(prev => {
-          const next = prev.map(i => {
-            if (i.id !== itemId) return i
-            const wM = i.widthM || (i.w / GRID2D)
-            const dM = i.depthM || (i.d / GRID2D)
-            const clamped3D = clamp3DPosition(i, cfgRef.current, pendingX3d, pendingZ3d)
-            const coords2d = item3DTo2D(clamped3D.x, clamped3D.z, wM, dM)
-            return { ...i, x: coords2d.x, y: coords2d.y }
-          })
-          designStore.setItems(next)  // sync to 2D
-          return next
-        })
-        setDirty(true)
-      }
-      // Restore real mesh, remove proxy
-      const d = dragFurnRef.current
+      ctx.fillStyle = base
+      traceFurnitureSilhouette(ctx, item)
+      ctx.fill()
+      // Subtle sheen
       try {
-        if (d?.mesh) d.mesh.visible = true
-        if (d?.proxy && d?.proxy.parent) {
-          d.proxy.parent.remove(d.proxy)
-          d.proxy.geometry?.dispose?.()
-          d.proxy.material?.dispose?.()
+        const g=ctx.createLinearGradient(-item.w/2,-item.d/2,item.w/2,item.d/2)
+        g.addColorStop(0,'rgba(255,255,255,0.25)'); g.addColorStop(1,'rgba(0,0,0,0.06)')
+        ctx.fillStyle=g
+        traceFurnitureSilhouette(ctx, item)
+        ctx.fill()
+      } catch(_){}
+      // Outline
+      ctx.strokeStyle=sel?'#3b82f6':'rgba(0,0,0,0.25)'; ctx.lineWidth=sel?2.5:1.5
+      traceFurnitureSilhouette(ctx, item)
+      ctx.stroke()
+    }
+    ctx.shadowColor='transparent'; ctx.shadowBlur=0; ctx.shadowOffsetX=0; ctx.shadowOffsetY=0
+    drawFurnDetail(ctx,item,topDownCache)
+    const fs=Math.max(7,Math.min(13,Math.min(item.w,item.d)/4.5))
+    ctx.fillStyle='rgba(15,23,42,0.85)'; ctx.font=`600 ${fs}px DM Sans,system-ui,sans-serif`
+    ctx.textAlign='center'; ctx.textBaseline='middle'
+    let lbl=item.label||item.name||''
+    while(lbl.length>2 && ctx.measureText(lbl).width>item.w-10) lbl=lbl.slice(0,-1)
+    if(lbl!==(item.label||item.name||'')) lbl+='…'
+    ctx.fillText(lbl,0,0)
+    if(sel){
+      ctx.strokeStyle='#3b82f6'; ctx.lineWidth=1.5; ctx.setLineDash([5,3])
+      ctx.beginPath(); ctx.roundRect(-item.w/2-6,-item.d/2-6,item.w+12,item.d+12,8); ctx.stroke(); ctx.setLineDash([])
+      ;[[-item.w/2-5,-item.d/2-5],[item.w/2+5,-item.d/2-5],[-item.w/2-5,item.d/2+5],[item.w/2+5,item.d/2+5]].forEach(([hx,hy])=>{
+        const hs=8; ctx.fillStyle='#fff'; ctx.strokeStyle='#3b82f6'; ctx.lineWidth=1.5
+        ctx.beginPath(); ctx.rect(hx-hs/2,hy-hs/2,hs,hs); ctx.fill(); ctx.stroke()
+      })
+      const rh=18; ctx.fillStyle='#f59e0b'; ctx.strokeStyle='#fff'; ctx.lineWidth=1.5
+      ctx.beginPath(); ctx.arc(0,-item.d/2-rh,6,0,Math.PI*2); ctx.fill(); ctx.stroke()
+      ctx.strokeStyle='rgba(245,158,11,0.6)'; ctx.lineWidth=1.5; ctx.setLineDash([3,2])
+      ctx.beginPath(); ctx.moveTo(0,-item.d/2-5); ctx.lineTo(0,-item.d/2-rh+6); ctx.stroke(); ctx.setLineDash([])
+    }
+    ctx.restore()
+  })
+  ctx.restore()
+}
+
+async function makePlanThumbnailBlob(canvas, options = {}) {
+  const scale = options.scale || 2
+  const w = Math.max(1200, Math.round((canvas.width || 640) * scale / (window.devicePixelRatio || 1)))
+  const h = Math.max(680, Math.round((canvas.height || 360) * scale / (window.devicePixelRatio || 1)))
+  const out = document.createElement('canvas')
+  out.width = w; out.height = h
+  const ctx = out.getContext('2d')
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, w, h)
+
+  const sx = canvas.width, sy = canvas.height
+  const sAspect = sx / sy
+  const oAspect = w / h
+  let dw = w, dh = h, dx = 0, dy = 0
+  if (sAspect > oAspect) { dh = w / sAspect; dy = (h - dh) / 2 }
+  else { dw = h * sAspect; dx = (w - dw) / 2 }
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(canvas, 0, 0, sx, sy, dx, dy, dw, dh)
+
+  return await new Promise((resolve) => out.toBlob(resolve, 'image/png', 0.96))
+}
+
+async function makePlanThumbnailWithNamesBlob(canvas, items = [], overlays = {}, options = {}) {
+  const baseBlob = await makePlanThumbnailBlob(canvas, options)
+  if (!baseBlob) return null
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i); i.onerror = reject;
+    i.src = URL.createObjectURL(baseBlob)
+  })
+
+  const padding = 160
+  const w = img.width
+  const h = img.height + padding
+  const out = document.createElement('canvas')
+  out.width = w; out.height = h
+  const ctx = out.getContext('2d')
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, w, h)
+  ctx.drawImage(img, 0, 0, w, img.height)
+
+  const names = []
+  for (const i of items) {
+    const label = i.name || i.label || `${i.category || 'Item'} ${i.id}`
+    names.push(`${i.category || 'Furniture'}: ${label}`)
+  }
+  const doorNames = (overlays.doors || []).map((d, idx) => `${d.name || `Door ${idx + 1}`}`)
+  const windowNames = (overlays.windows || []).map((w, idx) => `${w.name || `Window ${idx + 1}`}`)
+  const curtainNames = (overlays.curtains || []).map((c, idx) => `${c.name || `Curtain ${idx + 1}`}`)
+
+  if (doorNames.length) names.push(`Doors: ${doorNames.join(', ')}`)
+  if (windowNames.length) names.push(`Windows: ${windowNames.join(', ')}`)
+  if (curtainNames.length) names.push(`Curtains: ${curtainNames.join(', ')}`)
+  if (names.length === 0) names.push('No named components')
+
+  const fontSize = 16
+  ctx.fillStyle = '#111827'
+  ctx.font = `bold ${fontSize}px DM Sans, system-ui, sans-serif`
+  ctx.textBaseline = 'top'
+  const startY = img.height + 12
+  let y = startY
+  const maxLines = Math.floor((padding - 20) / (fontSize + 4))
+  for (let i = 0; i < Math.min(names.length, maxLines); i++) {
+    const line = names[i]
+    ctx.fillText(line, 16, y)
+    y += fontSize + 4
+  }
+  if (names.length > maxLines) {
+    ctx.fillText(`...and ${names.length - maxLines} more entries`, 16, y)
+  }
+
+  return await new Promise((resolve) => out.toBlob(resolve, 'image/png', 0.96))
+}
+
+/* ════════════════════════════════════════════════════
+   MAIN COMPONENT
+════════════════════════════════════════════════════ */
+export default function Workspace2D() {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const canvasRef   = useRef(null)
+  const wrapRef     = useRef(null)
+  const sizedRef    = useRef(false)
+  const fileInputRef = useRef(null)   // ← reliable file trigger
+
+  // ── Shared design store (syncs with Workspace3D) ──
+  const designStore = useDesignStore()
+
+  const [project,       setProject]       = useState(null)
+  const [isEditingName, setIsEditingName] = useState(false)
+  const [nameDraft,     setNameDraft]     = useState('')
+  const [loading,       setLoading]       = useState(true)
+  const [cfg,           setCfg]           = useState({ shape:'rectangle', width:5, depth:4, height:2.8, wallColor:'#F5F5F0', floorTexture:'wood' })
+  const [items,         setItems]         = useState([])
+  const [overlays,      setOverlays]      = useState({ doors:[], windows:[], curtains:[] })
+  const [selected,      setSelected]      = useState(null)
+  const [selectedOverlay, setSelectedOverlay] = useState(null)
+  const [dirty,         setDirty]         = useState(false)
+  const [saving,        setSaving]        = useState(false)
+  const [zoom,          setZoom]          = useState(1)
+  const [panX,          setPanX]          = useState(80)
+  const [panY,          setPanY]          = useState(60)
+  const [mode,          setMode]          = useState('select')
+  const [leftOpen,      setLeftOpen]      = useState(true)
+  const [activeTab,     setActiveTab]     = useState('furniture')
+  const [furSearch,     setFurSearch]     = useState('')
+  const [furCat,        setFurCat]        = useState('All')
+  const [library,       setLibrary]       = useState(FURNITURE_LIBRARY)
+  const [curtainColor,  setCurtainColor]  = useState('#fca5a5')
+  const [pendingFit,    setPendingFit]    = useState(false)
+  const [customModels,  setCustomModels]  = useState([])
+  const [uploadingModel,setUploadingModel]= useState(false)
+  const [topDownCache,  setTopDownCache]  = useState({})
+  const imgCacheRef = useRef({})
+  const [imgCacheTick, setImgCacheTick] = useState(0) // trigger redraw when images load
+  const previewJobsRef = useRef(new Map()) // modelId -> boolean (in-flight)
+  const [modelsExpanded,setModelsExpanded]= useState(true)
+  const [catScroll,     setCatScroll]     = useState(0) // eslint-disable-line
+
+  const stateRef = useRef({})
+  // Build a quick lookup: backend modelId -> topViewUrl/thumbnailUrl
+  const modelThumbById = useRef({})
+  stateRef.current = { cfg, items, overlays, selectedOverlay, selected, zoom, panX, panY, topDownCache, customModels, imgCache: imgCacheRef.current, modelThumbById: modelThumbById.current }
+  const zoomRef = useRef(zoom); useEffect(()=>{ zoomRef.current=zoom },[zoom])
+  const panRef  = useRef({x:panX,y:panY}); useEffect(()=>{ panRef.current={x:panX,y:panY} },[panX,panY])
+  const drag    = useRef(null)
+  const history = useRef([])
+  const redoStack = useRef([])
+  const isDragging = useRef(false)  // ← prevents store sync during drag frames
+
+  // ── Sync items/overlays/cfg TO shared store whenever they change ──
+  // Guard: skip sync while dragging to avoid lag (sync happens on mouseUp instead)
+  useEffect(()=>{ if(!isDragging.current) designStore.setItems(items) },[items]) // eslint-disable-line
+  useEffect(()=>{ designStore.setOverlays(overlays) },[overlays]) // eslint-disable-line
+  useEffect(()=>{ designStore.setCfg(cfg) },[cfg]) // eslint-disable-line
+  useEffect(()=>{ designStore.setCustomModels(customModels) },[customModels]) // eslint-disable-line
+
+  /* ── Fit to view ── */
+  const computeFit = useCallback((cw, ch, c) => {
+    const sh=c.shape||'rectangle', w=c.width||5, d=c.depth||4
+    const RW=(sh==='square'?Math.min(w,d):w)*GRID
+    const RD=(sh==='square'?Math.min(w,d):d)*GRID
+    const pad=120
+    const nz=Math.max(0.08,Math.min(4,Math.min((cw-pad)/(RW+OX*2),(ch-pad)/(RD+OY*2))))
+    return { zoom:nz, panX:(cw-(RW+OX*2)*nz)/2, panY:(ch-(RD+OY*2)*nz)/2 }
+  },[])
+
+  /* ── Canvas size / draw ── */
+  useLayoutEffect(()=>{
+    const canvas=canvasRef.current, wrap=wrapRef.current; if(!canvas||!wrap) return
+    const sizeCanvas=()=>{
+      const dpr=window.devicePixelRatio||1, w=wrap.clientWidth, h=wrap.clientHeight; if(!w||!h) return
+      const pw=Math.round(w*dpr), ph=Math.round(h*dpr)
+      if(canvas.width!==pw||canvas.height!==ph){canvas.width=pw;canvas.height=ph;canvas.style.width=w+'px';canvas.style.height=h+'px'}
+      if(!sizedRef.current){sizedRef.current=true;if(pendingFit){const f=computeFit(w,h,stateRef.current.cfg);setZoom(f.zoom);setPanX(f.panX);setPanY(f.panY);setPendingFit(false)}}
+      draw(canvas,stateRef.current)
+    }
+    sizeCanvas()
+    const ro=new ResizeObserver(sizeCanvas); ro.observe(wrap)
+    return ()=>ro.disconnect()
+  },[computeFit,pendingFit]) // eslint-disable-line
+
+  useEffect(()=>{
+    const c=canvasRef.current; if(!c||c.width===0) return
+    draw(c,{cfg,items,overlays,selected,selectedOverlay,zoom,panX,panY,topDownCache,imgCache:imgCacheRef.current,modelThumbById:modelThumbById.current})
+  },[cfg,items,overlays,selected,selectedOverlay,zoom,panX,panY,topDownCache,imgCacheTick])
+
+  useEffect(()=>{
+    if(!pendingFit) return
+    const canvas=canvasRef.current; if(!canvas||canvas.width===0) return
+    const dpr=window.devicePixelRatio||1
+    const f=computeFit(canvas.width/dpr,canvas.height/dpr,cfg)
+    setZoom(f.zoom); setPanX(f.panX); setPanY(f.panY); setPendingFit(false)
+  },[pendingFit,cfg,computeFit])
+
+  /* ── Load project ── */
+  useEffect(()=>{
+    setLoading(true)
+    projectsApi.getById(id).then(p=>{
+      setProject(p)
+      let c={shape:'rectangle',width:5,depth:4,height:2.8,wallColor:'#F5F5F0',floorTexture:'wood'}
+      try{c=JSON.parse(p.roomConfig)}catch{}
+      setCfg(c)
+      let its=[], ov={doors:[],windows:[],curtains:[]}, cms=[]
+      try{
+        const saved=JSON.parse(p.furnitureLayout)
+        if(saved?.items){
+          its=Array.isArray(saved.items)?saved.items:[]
+          ov=saved.overlays||ov
+          cms=Array.isArray(saved.customModels)?saved.customModels:[]
         }
-      } catch {}
-      dragFurnRef.current = null
-    }
-    p.down = false
-  }, []) // eslint-disable-line
+        else if(Array.isArray(saved)) its=saved
+      }catch{}
+      setItems(its)
+      setOverlays(ov)
+      setCustomModels(cms)
+      // ← Push initial data into shared store so 3D can pick it up immediately
+      designStore.loadProject(id, its, ov, c, cms)
+      setPendingFit(true)
+    }).catch(()=>{toast.error('Failed to load project');navigate('/projects')}).finally(()=>setLoading(false))
+    furnitureApi.getAll().then(d=>{
+  if(d?.length) {
+    // Backend items override built-ins with the same id, but built-ins are never discarded
+    const backendIds = new Set(d.map(item => String(item.id)))
+    const merged = [
+      ...FURNITURE_LIBRARY.filter(item => !backendIds.has(String(item.id))),
+      ...d,
+    ]
+    setLibrary(merged)
+  }
+}).catch(()=>{})
+  },[id]) // eslint-disable-line
 
-  const onWheel = useCallback(e => {
-    e.preventDefault()
-    orbitRef.current.radius = Math.max(0.4, Math.min(28, orbitRef.current.radius * (e.deltaY > 0 ? 1.1 : 0.91)))
-    applyOrbit(camRef.current, orbitRef.current)
-  }, [])
-
-  const resetCamera = useCallback(() => {
-    const dims = roomDims(cfg)
-    orbitRef.current = { theta: 0.7, phi: 0.62, radius: Math.max(dims.W, dims.D) * 1.7, tx: dims.W / 2, ty: dims.H * 0.5, tz: dims.D / 2 }
-    applyOrbit(camRef.current, orbitRef.current)
-  }, [cfg])
-
-  const moveItem = useCallback((axis, delta) => {
-    if (!selectedId) return
-    setItems(prev => prev.map(i => {
-      if (i.id !== selectedId) return i
-      if (axis === 'x') return { ...i, x: (i.x || 0) + delta * GRID2D }
-      if (axis === 'z') return { ...i, y: (i.y || 0) + delta * GRID2D }
-      if (axis === 'ry') return { ...i, rotation: ((i.rotation || 0) + delta * 90 + 360) % 360 }
-      return i
-    }))
-    setDirty(true)
-  }, [selectedId])
-
-  const liftItem = useCallback((deltaMeters) => {
-    if (!selectedId) return
-    setItems(prev => prev.map(i => {
-      if (i.id !== selectedId) return i
-      const maxLift = Math.max(0, (cfg.height || 2.8) - (i.heightM || 0.8))
-      const next = clamp((i.elevationM || 0) + deltaMeters, 0, maxLift)
-      return { ...i, elevationM: next }
-    }))
-    setDirty(true)
-  }, [selectedId, cfg.height])
-
+  // Rebuild top-down cache from persisted custom model data (so silhouettes stay identical after 3D round-trips)
   useEffect(() => {
-    const h = e => {
-      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return
-      if (e.key === 'r' || e.key === 'R') resetCamera()
-      if (e.key === 'Escape') setSelectedId(null)
+    if (!customModels?.length) return
+    const missing = customModels.filter(m => m?.id && m?.b64 && m?.ext && !topDownCache[m.id])
+    if (!missing.length) return
+    const next = {}
+    for (const m of missing) {
+      try {
+        const buf = base64ToArrayBuffer(m.b64)
+        if (m.ext === 'obj') {
+          const text = new TextDecoder().decode(buf)
+          const td = parseOBJTopDown(text)
+          if (td?.pts2d?.length) next[m.id] = td
+        } else if (m.ext === 'glb') {
+          const td = parseGLBTopDown(buf)
+          if (td?.pts2d?.length) next[m.id] = td
+        }
+      } catch (e) {
+        console.warn('Failed rebuilding top-down cache for', m.id, e)
+      }
     }
-    window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h)
-  }, [resetCamera])
+    if (Object.keys(next).length) setTopDownCache(prev => ({ ...prev, ...next }))
+  }, [customModels]) // eslint-disable-line
 
-  const save = async () => {
-    setSaving(true)
-    try {
-      await projectsApi.update(id, { roomConfig: JSON.stringify(cfg), furnitureLayout: JSON.stringify({ items, overlays, customModels }) })
-      designStore.setItems(items)
-      designStore.setOverlays(overlays)
-      designStore.setCfg(cfg)
-      designStore.setCustomModels(customModels)
-      setDirty(false); toast.success('Saved!')
+  // Preload preview images from backend library + customModels
+  useEffect(() => {
+    const srcs = new Set()
+    // backend library
+    ;(library || []).forEach(m => {
+      if (m?.id != null) {
+        const url = m.topViewUrl || m.thumbnailUrl
+        if (url) {
+          modelThumbById.current[m.id] = url
+          srcs.add(url)
+        }
+      }
+    })
+    // custom models previews (data URLs)
+    ;(customModels || []).forEach(m => {
+      if (m?.previewUrl) srcs.add(m.previewUrl)
+    })
+    // items may contain their own urls
+    ;(items || []).forEach(i => {
+      const url = i.topViewUrl || i.thumbnailUrl || i.previewUrl
+      if (url) srcs.add(url)
+    })
+
+    for (const url of srcs) {
+      if (imgCacheRef.current[url]) continue
+      const img = new Image()
+      // Needed so the 2D canvas can be exported (thumbnail) even when it draws images.
+      // Works with `/files/*` since backend now allows cross-origin for static assets.
+      if (!String(url).startsWith('data:')) img.crossOrigin = 'anonymous'
+      img.onload = () => setImgCacheTick(t => t + 1)
+      img.onerror = () => {}
+      img.src = url
+      imgCacheRef.current[url] = img
     }
-    catch { toast.error('Save failed') } finally { setSaving(false) }
+  }, [library, customModels, items])
+
+  const centerView = useCallback(()=>{
+    const canvas=canvasRef.current; if(!canvas||canvas.width===0) return
+    const dpr=window.devicePixelRatio||1
+    const f=computeFit(canvas.width/dpr,canvas.height/dpr,stateRef.current.cfg)
+    setZoom(f.zoom); setPanX(f.panX); setPanY(f.panY)
+  },[computeFit])
+
+  const screenToWorld = useCallback((sx,sy)=>{
+    const rect=canvasRef.current.getBoundingClientRect()
+    return { x:(sx-rect.left-panRef.current.x)/zoomRef.current, y:(sy-rect.top-panRef.current.y)/zoomRef.current }
+  },[])
+
+  const hitHandle=(item,wx,wy)=>{
+    const hw=item.w/2,hd=item.d/2,icx=item.x+hw,icy=item.y+hd
+    const rad=-(item.rotation||0)*Math.PI/180
+    const dx=wx-icx,dy=wy-icy
+    const lx=dx*Math.cos(rad)-dy*Math.sin(rad),ly=dx*Math.sin(rad)+dy*Math.cos(rad)
+    const hs=9/zoomRef.current,rh=18/zoomRef.current
+    if(Math.abs(lx)<hs&&Math.abs(ly-(-hd-rh))<hs) return 'rotate'
+    const corners=[[-hw-5,-hd-5],[hw+5,-hd-5],[-hw-5,hd+5],[hw+5,hd+5]]
+    for(const[cx2,cy2]of corners) if(Math.abs(lx-cx2)<hs&&Math.abs(ly-cy2)<hs) return 'resize'
+    return null
+  }
+
+  const hitOverlay=(wx,wy)=>{
+    const ov=stateRef.current.overlays
+    for(const d of(ov.doors||[])){const dw=d.w||80,rad=-(d.rotation||0)*Math.PI/180,dx=wx-d.x,dy=wy-d.y,lx=dx*Math.cos(rad)-dy*Math.sin(rad),ly=dx*Math.sin(rad)+dy*Math.cos(rad);if(lx>=-8&&lx<=dw+8&&Math.abs(ly)<18) return{type:'door',id:d.id}}
+    for(const w of(ov.windows||[])){const ww=w.w||100,rad=-(w.rotation||0)*Math.PI/180,dx=wx-w.x,dy=wy-w.y,lx=dx*Math.cos(rad)-dy*Math.sin(rad),ly=dx*Math.sin(rad)+dy*Math.cos(rad);if(Math.abs(lx)<=ww/2+8&&Math.abs(ly)<22) return{type:'window',id:w.id}}
+    for(const c of(ov.curtains||[])){const cw=c.w||120,rad=-(c.rotation||0)*Math.PI/180,dx=wx-c.x,dy=wy-c.y,lx=dx*Math.cos(rad)-dy*Math.sin(rad),ly=dx*Math.sin(rad)+dy*Math.cos(rad);if(Math.abs(lx)<=cw/2+14&&ly>=-22&&ly<=34) return{type:'curtain',id:c.id}}
+    return null
+  }
+
+  const onMouseDown=useCallback(e=>{
+    if(e.button===1||(e.button===0&&mode==='pan')){drag.current={type:'pan',startX:e.clientX,startY:e.clientY,startPanX:panRef.current.x,startPanY:panRef.current.y};return}
+    if(e.button!==0) return
+    const{x:wx,y:wy}=screenToWorld(e.clientX,e.clientY)
+    const{items:its,selected:sel}=stateRef.current
+    for(let i=its.length-1;i>=0;i--){
+      const item=its[i],hw=item.w/2,hd=item.d/2,icx=item.x+hw,icy=item.y+hd
+      const rad=-(item.rotation||0)*Math.PI/180,dx=wx-icx,dy=wy-icy
+      const lx=dx*Math.cos(rad)-dy*Math.sin(rad),ly=dx*Math.sin(rad)+dy*Math.cos(rad)
+      if(lx>=-hw-14&&lx<=hw+14&&ly>=-hd-22&&ly<=hd+14){
+        isDragging.current=true
+        if(item.id===sel){const h=hitHandle(item,wx,wy);if(h==='rotate') drag.current={type:'rotate',id:item.id,cx:icx,cy:icy};else if(h==='resize') drag.current={type:'resize',id:item.id,startW:item.w,startD:item.d,mx:wx,my:wy};else drag.current={type:'move',id:item.id,offX:wx-item.x,offY:wy-item.y}}
+        else{setSelected(item.id);setSelectedOverlay(null);drag.current={type:'move',id:item.id,offX:wx-item.x,offY:wy-item.y}}
+        return
+      }
+    }
+    const ov=hitOverlay(wx,wy)
+    if(ov){setSelectedOverlay(ov);setSelected(null);const arr=stateRef.current.overlays[ov.type==='door'?'doors':ov.type==='window'?'windows':'curtains'];const ovItem=arr.find(x=>x.id===ov.id);if(ovItem) drag.current={type:'overlay-move',overlayType:ov.type,id:ov.id,offX:wx-ovItem.x,offY:wy-ovItem.y};return}
+    setSelected(null);setSelectedOverlay(null)
+    drag.current={type:'pan',startX:e.clientX,startY:e.clientY,startPanX:panRef.current.x,startPanY:panRef.current.y}
+  },[mode,screenToWorld]) // eslint-disable-line
+
+  const onMouseMove=useCallback(e=>{
+    if(!drag.current) return
+    const d=drag.current
+    if(d.type==='pan'){setPanX(d.startPanX+(e.clientX-d.startX));setPanY(d.startPanY+(e.clientY-d.startY));return}
+    const{x:wx,y:wy}=screenToWorld(e.clientX,e.clientY)
+    if(d.type==='move'){
+      // Mutate stateRef directly for instant canvas draw — no setState during drag
+      const item = stateRef.current.items.find(i=>i.id===d.id)
+      if (!item) return
+      const rawX = snapV(wx-d.offX), rawY = snapV(wy-d.offY)
+      const clamped = clampItemToRoom(item, stateRef.current.cfg, rawX, rawY)
+      stateRef.current.items=stateRef.current.items.map(i=>i.id===d.id?{...i,x:clamped.x,y:clamped.y}:i)
+      const canvas=canvasRef.current; if(canvas) draw(canvas,stateRef.current)
+      d.pendingX=clamped.x; d.pendingY=clamped.y; d.hasPending=true
+    }
+    else if(d.type==='rotate'){
+      const angle=Math.atan2(wy-d.cy,wx-d.cx)*180/Math.PI+90
+      stateRef.current.items=stateRef.current.items.map(i=>i.id===d.id?{...i,rotation:normalRot(Math.round(angle))}:i)
+      const canvas=canvasRef.current; if(canvas) draw(canvas,stateRef.current)
+      d.hasPending=true
+    }
+    else if(d.type==='resize'){
+      const nw=Math.max(20,snapV(d.startW+(wx-d.mx)))
+      const nd=Math.max(20,snapV(d.startD+(wy-d.my)))
+      stateRef.current.items=stateRef.current.items.map(i=>i.id===d.id?{...i,w:nw,d:nd}:i)
+      const canvas=canvasRef.current; if(canvas) draw(canvas,stateRef.current)
+      d.hasPending=true
+    }
+    else if(d.type==='overlay-move'){
+      const key=d.overlayType==='door'?'doors':d.overlayType==='window'?'windows':'curtains'
+      stateRef.current.overlays={...stateRef.current.overlays,[key]:stateRef.current.overlays[key].map(x=>x.id===d.id?{...x,x:snapV(wx-d.offX),y:snapV(wy-d.offY)}:x)}
+      const canvas=canvasRef.current; if(canvas) draw(canvas,stateRef.current)
+      d.hasPending=true
+    }
+  },[screenToWorld]) // eslint-disable-line
+
+  const onMouseUp=useCallback(()=>{
+    if(drag.current?.hasPending){
+      if(['move','rotate','resize'].includes(drag.current.type)){
+        const next=stateRef.current.items
+        setItems(next)
+        designStore.setItems(next)
+      }
+      if(drag.current?.type==='overlay-move'){
+        const next=stateRef.current.overlays
+        setOverlays(next)
+        designStore.setOverlays(next)
+      }
+      setDirty(true)
+    }
+    isDragging.current=false
+    drag.current=null
+  },[]) // eslint-disable-line
+
+  useEffect(()=>{
+    const canvas=canvasRef.current; if(!canvas) return
+    const onWheel=e=>{
+      e.preventDefault()
+      const factor=e.deltaY<0?1.08:1/1.08
+      const rect=canvas.getBoundingClientRect()
+      const mx=e.clientX-rect.left, my=e.clientY-rect.top
+      setZoom(z=>{const nz=Math.max(0.08,Math.min(8,z*factor));setPanX(p=>mx-(mx-p)*(nz/z));setPanY(p=>my-(my-p)*(nz/z));return nz})
+    }
+    canvas.addEventListener('wheel',onWheel,{passive:false})
+    return()=>canvas.removeEventListener('wheel',onWheel)
+  },[])
+
+  const onDrop=useCallback(e=>{
+    e.preventDefault()
+    const raw=e.dataTransfer.getData('furniture'); if(!raw) return
+    const model=JSON.parse(raw)
+    const canvas=canvasRef.current, rect=canvas.getBoundingClientRect()
+    const wx=(e.clientX-rect.left-panRef.current.x)/zoomRef.current
+    const wy=(e.clientY-rect.top-panRef.current.y)/zoomRef.current
+    // Backend models use meters: width/depth/height. Built-in library uses cm-ish: w/d/h.
+    const widthM  = Number.isFinite(+model.width) ? +model.width : (model.w != null ? (model.w / 100) : 1)
+    const depthM  = Number.isFinite(+model.depth) ? +model.depth : (model.d != null ? (model.d / 100) : 0.8)
+    const heightM = Number.isFinite(+model.height) ? +model.height : (model.h != null ? (model.h / 100) : 0.8)
+    const pw=Math.max(20,Math.round(widthM*GRID))
+    const pd=Math.max(20,Math.round(depthM*GRID))
+    const customModelEntry=model.customModelId?(stateRef.current.customModels||[]).find(m=>m.id===model.customModelId):null
+    const base = {
+      id:Date.now(),label:model.name,name:model.name,category:model.category||'Custom',
+      color:model.color||CAT_COLOR[model.category]||'#c4b5fd',
+      w:pw,d:pd,rotation:0,
+      modelId:model.id,widthM,depthM,heightM,
+      customModelId:model.customModelId||null,
+      customModelExt:model.customModelExt||null,
+      customModelB64:customModelEntry?.b64||null,
+      topViewUrl: model.topViewUrl || model.thumbnailUrl || model.previewUrl || null,
+      modelUrl: model.modelUrl || null,
+      elevationM: 0,
+    }
+    const point = clampItemToRoom(base, stateRef.current.cfg, snapV(wx-pw/2), snapV(wy-pd/2))
+    const newItem = { ...base, x: point.x, y: point.y }
+
+    pushHistory(JSON.stringify(stateRef.current.items))
+    setItems(prev=>[...prev,newItem]); setSelected(newItem.id); setSelectedOverlay(null); setDirty(true)
+  },[])
+
+  const pushHistory=useCallback((itemsSnapshot) => { history.current.push(itemsSnapshot); if(history.current.length>80) history.current.shift(); redoStack.current=[] }, [])
+  const undo = useCallback(() => {
+    if (!history.current.length) { toast('Nothing to undo'); return; }
+    redoStack.current.push(JSON.stringify(stateRef.current.items));
+    const prev = history.current.pop();
+    setItems(JSON.parse(prev));
+    setSelected(null);
+    setDirty(true);
+  }, [])
+  const redo = useCallback(() => {
+    if (!redoStack.current.length) { toast('Nothing to redo'); return; }
+    history.current.push(JSON.stringify(stateRef.current.items));
+    const next = redoStack.current.pop();
+    setItems(JSON.parse(next));
+    setSelected(null);
+    setDirty(true);
+  }, [])
+  const rot90=useCallback(()=>{ const s=stateRef.current.selected; if(!s) return; pushHistory(JSON.stringify(stateRef.current.items)); setItems(p=>p.map(i=>i.id===s?{...i,rotation:((i.rotation||0)+90)%360}:i)); setDirty(true) },[pushHistory])
+  const del=useCallback(()=>{ const s=stateRef.current.selected; if(!s) return; pushHistory(JSON.stringify(stateRef.current.items)); setItems(p=>p.filter(i=>i.id!==s)); setSelected(null); setDirty(true) },[pushHistory])
+  const dup=useCallback(()=>{ const s=stateRef.current.selected; if(!s) return; pushHistory(JSON.stringify(stateRef.current.items)); const src=stateRef.current.items.find(i=>i.id===s); if(!src) return; const ni={...src,id:Date.now(),x:src.x+25,y:src.y+25}; setItems(p=>[...p,ni]); setSelected(ni.id); setDirty(true) },[pushHistory])
+
+  const delOverlay=useCallback(()=>{
+    const ov=stateRef.current.selectedOverlay; if(!ov) return
+    const key=ov.type==='door'?'doors':ov.type==='window'?'windows':'curtains'
+    setOverlays(o=>({...o,[key]:o[key].filter(x=>x.id!==ov.id)}))
+    setSelectedOverlay(null); setDirty(true)
+  },[])
+
+  const updateOverlay=useCallback((type,ovId,field,value)=>{
+    const key = type === 'door' ? 'doors' : type === 'window' ? 'windows' : 'curtains'
+    setOverlays(prev => {
+      const list = prev[key] || []
+      if (!list.some(x => x.id === ovId)) return prev
+      const nextList = list.map(x => x.id === ovId ? { ...x, [field]: value } : x)
+      return { ...prev, [key]: nextList }
+    })
+    setDirty(true)
+  },[])
+
+  useEffect(()=>{
+    const h=e=>{
+      if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)) return
+      if(e.key==='Delete'||e.key==='Backspace') del()
+      if(e.key==='r'||e.key==='R') rot90()
+      if(e.key==='d'||e.key==='D') dup()
+      if((e.ctrlKey||e.metaKey)&&e.key==='z'){e.preventDefault();undo()}
+      if((e.ctrlKey||e.metaKey)&&e.key==='y'){e.preventDefault();redo()}
+      if((e.ctrlKey||e.metaKey)&&e.shiftKey&&e.key==='Z'){e.preventDefault();redo()}
+      if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();save()}
+      if(e.key==='Escape'){setSelected(null);setSelectedOverlay(null)}
+      if(e.key===' '){e.preventDefault();setMode(m=>m==='pan'?'select':'pan')}
+      if(e.key==='f'||e.key==='F') centerView()
+    }
+    window.addEventListener('keydown',h); return()=>window.removeEventListener('keydown',h)
+  },[del,rot90,dup,undo,redo,centerView]) // eslint-disable-line
+
+  const addWindow=()=>{ setOverlays(o=>({...o,windows:[...o.windows,{id:Date.now(),name:`Window ${o.windows.length+1}`,x:OX+(stateRef.current.cfg.width||5)*GRID/2,y:OY,rotation:0,w:100,frameColor:'#d0d0d0',glassTint:'#88bbee',style:'cross',heightM:1.2,sillM:0.9}]})); setDirty(true); toast('Window added') }
+  const addCurtain=()=>{ setOverlays(o=>({...o,curtains:[...o.curtains,{id:Date.now(),name:`Curtain ${o.curtains.length+1}`,x:OX+(stateRef.current.cfg.width||5)*GRID/2,y:OY+8,rotation:0,w:120,color:curtainColor,style:'standard'}]})); setDirty(true); toast('Curtain added') }
+  const addDoor=()=>{ setOverlays(o=>({...o,doors:[...o.doors,{id:Date.now(),name:`Door ${o.doors.length+1}`,x:OX+10,y:OY,rotation:0,w:80,color:'#c8965a',frameColor:'#8a6030',style:'single',heightM:2.1}]})); setDirty(true); toast('Door added') }
+
+  /* ── Model upload (fixed: synchronous base64 + ref-based file trigger) ── */
+  const handleModelUpload=useCallback(async e=>{
+    const file=e.target.files?.[0]; if(!file) return
+    e.target.value=''  // reset immediately so same file can be re-selected
+    const ext=file.name.split('.').pop().toLowerCase()
+    if(!ext){toast.error('File must have an extension');return}
+    if(file.size>20*1024*1024){toast.error('File too large (max 20 MB)');return}
+    const currentCount=stateRef.current.customModels?.length??0
+    if(currentCount>=MAX_CUSTOM_MODELS){toast.error(`Maximum ${MAX_CUSTOM_MODELS} custom models`);return}
+    setUploadingModel(true)
+    try{
+      const buf=await file.arrayBuffer()
+      const modelId='custom_'+Date.now()
+      const modelName=file.name.replace(/\.\w+$/,'')
+      // Synchronous base64 — no FileReader races
+      const b64=arrayBufferToBase64(buf)
+      setCustomModels(prev=>{
+        if(prev.length>=MAX_CUSTOM_MODELS) return prev
+        return[...prev,{id:modelId,name:modelName,ext,b64,previewUrl:null}]
+      })
+      const schedule = window.requestIdleCallback || ((fn) => setTimeout(() => fn({ timeRemaining: () => 0 }), 50))
+      schedule(() => {
+        try {
+          let tdData = null
+          if(ext==='obj'){
+            const text=new TextDecoder().decode(buf)
+            tdData=parseOBJTopDown(text)
+          } else if(ext==='glb'){
+            tdData=parseGLBTopDown(buf)
+          }
+          if(tdData?.pts2d?.length>0){
+            setTopDownCache(prev=>({...prev,[modelId]:tdData}))
+          }
+        } catch(parseErr) {
+          console.warn('Top-down parse failed:',parseErr)
+        }
+      })
+
+      // Generate the preview *in the background* to avoid freezing on big models.
+      // (Keeps full quality; just defers the heavy work.)
+      const scheduleIdle = window.requestIdleCallback || ((fn) => setTimeout(() => fn({ timeRemaining: () => 0 }), 50))
+      scheduleIdle(async () => {
+        if (previewJobsRef.current.get(modelId)) return
+        previewJobsRef.current.set(modelId, true)
+        try {
+          if (ext === 'glb' || ext === 'obj') {
+            const previewUrl = await renderTopViewPreview({ ext, buffer: buf, size: 320, bg: '#ffffff' })
+            setCustomModels(prev => prev.map(m => m.id === modelId ? { ...m, previewUrl } : m))
+          }
+        } catch (pvErr) {
+          console.warn('Top view preview render failed:', pvErr)
+        } finally {
+          previewJobsRef.current.delete(modelId)
+        }
+      })
+      toast.success(`"${modelName}" loaded — drag to place`)
+    }catch(err){
+      console.error('Model upload error:',err)
+      toast.error('Upload failed: '+(err?.message||'unknown error'))
+    }finally{
+      setUploadingModel(false)
+    }
+  },[]) // reads via stateRef
+
+  const removeCustomModel=useCallback(modelId=>{
+    setCustomModels(prev=>prev.filter(m=>m.id!==modelId))
+    setTopDownCache(prev=>{ const n={...prev}; delete n[modelId]; return n })
+    setItems(prev=>prev.filter(i=>i.customModelId!==modelId))
+    setDirty(true)
+  },[])
+
+  const save=async()=>{
+    setSaving(true)
+    try{
+      await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays,customModels})})
+      setDirty(false)
+      toast.success('Saved!')
+      ;(async () => {
+        try {
+          const canvas = canvasRef.current
+          if (!canvas) return
+          const blob = await makePlanThumbnailBlob(canvas)
+          if (!blob) return
+          const fd = new FormData()
+          fd.append('thumbnailPng', blob, `plan_${id}.png`)
+          await projectsApi.uploadThumbnail(id, fd)
+        } catch (e) {
+          console.warn('Thumbnail upload failed (ignored):', e)
+        }
+      })()
+    }
+    catch{toast.error('Save failed')}finally{setSaving(false)}
+  }
+
+  const exportDesignAsJson = () => {
+    const normalizedItems = items.map((i) => ({
+      id: i.id,
+      category: i.category,
+      name: i.name || i.label || `${i.category || 'Furniture'} ${i.id}`,
+      label: i.label || i.name || '',
+      x: i.x,
+      y: i.y,
+      w: i.w,
+      d: i.d,
+      rotation: i.rotation,
+      color: i.color,
+      customModelId: i.customModelId || null,
+      modelId: i.modelId || null,
+      topViewUrl: i.topViewUrl || null,
+      modelUrl: i.modelUrl || null,
+    }))
+    const normalizedOverlays = {
+      doors: overlays.doors.map((d, i) => ({
+        id: d.id,
+        name: d.name || `Door ${i + 1}`,
+        w: d.w,
+        x: d.x,
+        y: d.y,
+        rotation: d.rotation,
+        color: d.color,
+        frameColor: d.frameColor,
+        style: d.style,
+        heightM: d.heightM,
+      })),
+      windows: overlays.windows.map((w, i) => ({
+        id: w.id,
+        name: w.name || `Window ${i + 1}`,
+        w: w.w,
+        x: w.x,
+        y: w.y,
+        rotation: w.rotation,
+        frameColor: w.frameColor,
+        glassTint: w.glassTint,
+        style: w.style,
+        heightM: w.heightM,
+        sillM: w.sillM,
+      })),
+      curtains: overlays.curtains.map((c, i) => ({
+        id: c.id,
+        name: c.name || `Curtain ${i + 1}`,
+        w: c.w,
+        x: c.x,
+        y: c.y,
+        rotation: c.rotation,
+        color: c.color,
+        style: c.style,
+      }))
+    }
+    const data = {
+      projectName: project?.name || 'RoomCraft Design',
+      exportedAt: new Date().toISOString(),
+      roomConfig: cfg,
+      furnitureLayout: { items: normalizedItems, overlays: normalizedOverlays, customModels },
+      componentNames: {
+        furniture: normalizedItems.map(i => ({ id: i.id, name: i.name, category: i.category })),
+        doors: normalizedOverlays.doors.map(d => ({ id: d.id, name: d.name })),
+        windows: normalizedOverlays.windows.map(w => ({ id: w.id, name: w.name })),
+        curtains: normalizedOverlays.curtains.map(c => ({ id: c.id, name: c.name })),
+      }
+    }
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${(project?.name || 'roomcraft-design').replace(/[^a-z0-9_-]+/gi, '_').toLowerCase()}_${Date.now()}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    toast.success('Exported design JSON')
+  }
+
+  const exportDesignAsPng = async () => {
+    const canvas = canvasRef.current
+    if (!canvas) { toast.error('Canvas not available'); return }
+    try {
+      const blob = await makePlanThumbnailWithNamesBlob(canvas, items, overlays)
+      if (!blob) { toast.error('Export failed'); return }
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `${(project?.name || 'roomcraft-design').replace(/[^a-z0-9_-]+/gi, '_').toLowerCase()}_${Date.now()}.png`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      toast.success('Exported design PNG with names')
+    } catch (e) {
+      console.error(e)
+      toast.error('Export failed')
+    }
   }
 
   // ── Auto-save: debounce 1.5s after any change ──
   const autoSaveTimer = useRef(null)
-  useEffect(() => {
-    if (!dirty) return
+  useEffect(()=>{
+    if(!dirty) return
     clearTimeout(autoSaveTimer.current)
-    autoSaveTimer.current = setTimeout(async () => {
-      try {
-        await projectsApi.update(id, { roomConfig: JSON.stringify(cfg), furnitureLayout: JSON.stringify({ items, overlays, customModels }) })
+    autoSaveTimer.current=setTimeout(async()=>{
+      try{
+        await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays,customModels})})
         setDirty(false)
-      } catch (e) { console.warn('Auto-save failed', e) }
-    }, 1500)
-    return () => clearTimeout(autoSaveTimer.current)
-  }, [dirty, items, overlays, customModels, cfg, id]) // eslint-disable-line
+      }catch(e){ console.warn('Auto-save failed',e) }
+    },1500)
+    return()=>clearTimeout(autoSaveTimer.current)
+  },[dirty,items,overlays,customModels,cfg,id]) // eslint-disable-line
 
-  const selectedItem = items.find(i => i.id === selectedId)
+  /* ── Derived ── */
+  const fullLibrary=[
+    ...library.filter(f=>f.category !== 'Outdoor'),
+    ...customModels
+      .filter(m=>m.name && m.customModelId && m.b64)
+      .map(m=>({
+        id:m.id,
+        name:m.name,
+        category:'Custom',
+        color:'#c4b5fd',
+        w:100,d:100,h:100,
+        customModelId:m.id,
+        customModelExt:m.ext,
+        previewUrl: m.previewUrl || null,
+      }))
+  ]
+  const categories=['All',...new Set(fullLibrary.map(f=>f.category))]
+  const filteredLib=fullLibrary.filter(f => (furCat==='All'||f.category===furCat) && f.name.toLowerCase().includes(furSearch.toLowerCase()))
+  const selectedItem=items.find(i=>i.id===selected)
+  const selectedOverlayItem=selectedOverlay
+    ? (selectedOverlay.type==='door'?overlays.doors:selectedOverlay.type==='window'?overlays.windows:overlays.curtains).find(x=>x.id===selectedOverlay.id)
+    : null
+  const rightOpen=!!(selectedItem||selectedOverlayItem)
 
-  if (loading) return (
-    <div className="h-screen flex items-center justify-center bg-[#1a2035] flex-col gap-4">
-      <div className="w-10 h-10 border-4 border-purple-400/30 border-t-purple-400 rounded-full animate-spin" />
-      <p className="text-purple-200 text-sm font-medium">Loading 3D scene…</p>
+  if(loading) return(
+    <div className="h-screen flex items-center justify-center bg-slate-50 flex-col gap-4">
+      <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"/>
+      <p className="text-slate-500 text-sm font-medium">Loading project…</p>
     </div>
   )
 
-  return (
-    <div className="h-screen flex flex-col bg-[#1a2035] overflow-hidden select-none">
-      <div className="h-14 bg-[#0f1628]/95 backdrop-blur border-b border-white/10 flex items-center px-3 gap-2 flex-shrink-0 z-20">
-        <button onClick={() => navigate(`/workspace/2d/${id}`)} className="p-1.5 rounded-lg text-slate-300 hover:bg-white/10 flex items-center gap-1 text-sm flex-shrink-0">
-          <ChevronLeft className="w-4 h-4" /><span className="hidden sm:inline">2D Edit</span>
+  /* ════════════════════════════════════════════════════
+     RENDER
+  ════════════════════════════════════════════════════ */
+  return(
+    <div className="h-screen flex flex-col bg-slate-100 overflow-hidden select-none">
+
+      {/* ── TOP BAR ── */}
+      <div className="h-14 bg-white border-b border-slate-200 flex items-center px-2 gap-1.5 flex-shrink-0 z-20 shadow-sm">
+        <button onClick={()=>navigate('/projects')} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 flex items-center gap-1 text-sm flex-shrink-0">
+          <ChevronLeft className="w-4 h-4"/><span className="hidden sm:inline text-xs font-medium">Projects</span>
         </button>
-        <div className="h-5 w-px bg-white/10 flex-shrink-0" />
+        <div className="h-5 w-px bg-slate-200 flex-shrink-0"/>
         {isEditingName ? (
           <input
             autoFocus
             value={nameDraft}
-            onChange={(e) => setNameDraft(e.target.value)}
+            onChange={e => setNameDraft(e.target.value)}
             onBlur={async () => {
               setIsEditingName(false)
               const next = nameDraft.trim() || 'Untitled'
-              setProject((p) => p ? { ...p, name: next } : p)
+              setProject(p => p ? { ...p, name: next } : p)
               try {
                 await projectsApi.update(id, {
                   name: next,
                   roomConfig: JSON.stringify(cfg),
                   furnitureLayout: JSON.stringify({ items, overlays, customModels }),
                 })
-                setProject((p) => p ? { ...p, name: next } : p)
+                setProject(p => p ? { ...p, name: next } : p)
               } catch (err) {
                 toast.error('Failed to rename project')
               }
             }}
-            onKeyDown={async (e) => {
-              if (e.key === 'Enter') e.currentTarget.blur()
-              if (e.key === 'Escape') setIsEditingName(false)
+            onKeyDown={async e => {
+              if (e.key === 'Enter') {
+                e.target.blur()
+              }
+              if (e.key === 'Escape') {
+                setIsEditingName(false)
+              }
             }}
-            className="w-40 bg-slate-900/10 border border-slate-300 rounded px-2 py-1 text-xs text-white"
+            className="w-40 bg-slate-100 border border-slate-300 rounded px-2 py-1 text-xs"
           />
         ) : (
           <span
-            className="font-semibold text-white text-sm truncate max-w-[120px] flex-shrink-0 cursor-pointer hover:text-purple-200"
+            className="font-semibold text-slate-900 text-sm truncate max-w-[120px] flex-shrink-0 cursor-pointer hover:text-slate-700"
             onClick={() => { setNameDraft(project?.name || ''); setIsEditingName(true) }}
             title="Click to rename"
-          >{project?.name || 'Untitled'}</span>
+          >{project?.name||'Untitled'}</span>
         )}
-        <span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 font-semibold border border-purple-500/30 flex-shrink-0">3D</span>
-        {dirty && <span className="text-xs text-amber-400 flex-shrink-0">● Unsaved</span>}
-        <div className="flex-1" />
-        <div className="flex bg-white/5 rounded-lg p-0.5 border border-white/10 flex-shrink-0">
-          {[['solid', 'Solid'], ['transparent', 'Frosted'], ['glass', 'Glass'], ['hidden', 'Hidden']].map(([v, l]) => (
-            <button key={v} onClick={() => setWallMode(v)} className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${wallMode === v ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'}`}>{l}</button>
+        <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-semibold flex-shrink-0">2D</span>
+        {dirty&&<span className="text-xs text-amber-500 flex-shrink-0">● Unsaved</span>}
+        <div className="flex-1"/>
+
+        {/* Mode toggle */}
+        <div className="flex bg-slate-100 rounded-lg p-0.5 flex-shrink-0">
+          {[['select','Select',<MousePointer className="w-3 h-3"/>],['pan','Pan',<Move className="w-3 h-3"/>]].map(([m,label,icon])=>(
+            <button key={m} onClick={()=>setMode(m)} className={`px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1 transition-all ${mode===m?'bg-white shadow-sm text-slate-900':'text-slate-500'}`}>{icon}{label}</button>
           ))}
         </div>
-        <div className="h-5 w-px bg-white/10 flex-shrink-0" />
-        {[[showCeiling, () => setShowCeiling(!showCeiling), Layers, 'Ceiling'],
-          [showShadows, () => setShowShadows(!showShadows), Sun, 'Shadows'],
-          [showGrid, () => setShowGrid(!showGrid), Grid3X3, 'Grid']
-        ].map(([on, fn, Icon, label]) => (
-          <button key={label} onClick={fn} title={label} className={`p-1.5 rounded-lg transition-all flex-shrink-0 ${on ? 'bg-purple-600/30 text-purple-300' : 'text-slate-500 hover:text-slate-300'}`}><Icon className="w-4 h-4" /></button>
-        ))}
-        <div className="h-5 w-px bg-white/10 flex-shrink-0" />
-        <button onClick={resetCamera} title="Reset camera (R)" className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 flex-shrink-0"><RotateCcw className="w-4 h-4" /></button>
-        <button onClick={save} disabled={saving} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium transition-all disabled:opacity-60 flex-shrink-0">
-          {saving ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
-          <span className="hidden sm:inline">Save</span>
+
+        {/* Zoom */}
+        <div className="flex items-center gap-0.5 flex-shrink-0">
+          <button onClick={()=>setZoom(z=>Math.max(0.08,+(z-0.1).toFixed(2)))} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><ZoomOut className="w-4 h-4"/></button>
+          <span className="text-xs text-slate-500 w-10 text-center font-mono">{Math.round(zoom*100)}%</span>
+          <button onClick={()=>setZoom(z=>Math.min(8,+(z+0.1).toFixed(2)))} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><ZoomIn className="w-4 h-4"/></button>
+          <button onClick={centerView} title="Fit (F)" className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><Maximize2 className="w-4 h-4"/></button>
+        </div>
+
+        <div className="h-5 w-px bg-slate-200 flex-shrink-0"/>
+
+        {/* Item actions */}
+        <button onClick={rot90} disabled={!selected} title="Rotate 90°" className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-30 flex-shrink-0"><RotateCw className="w-4 h-4"/></button>
+        <button onClick={dup} disabled={!selected} title="Duplicate" className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-30 flex-shrink-0"><Copy className="w-4 h-4"/></button>
+        <button onClick={del} disabled={!selected} title="Delete" className="p-1.5 rounded-lg text-red-400 hover:bg-red-50 disabled:opacity-30 flex-shrink-0"><Trash2 className="w-4 h-4"/></button>
+        <button onClick={undo} title="Undo (Ctrl+Z)" className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 flex-shrink-0"><Undo className="w-4 h-4"/></button>
+        <button onClick={redo} title="Redo (Ctrl+Y)" className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 flex-shrink-0"><RotateCw className="w-4 h-4"/></button>
+        <div className="h-5 w-px bg-slate-200 flex-shrink-0"/>
+
+        {/* Fixture quick-add */}
+        <button onClick={addDoor} title="Add Door" className="p-1.5 rounded-lg text-slate-500 hover:bg-blue-50 hover:text-blue-600 flex-shrink-0"><DoorOpen className="w-4 h-4"/></button>
+        <button onClick={addWindow} title="Add Window" className="p-1.5 rounded-lg text-slate-500 hover:bg-sky-50 hover:text-sky-600 flex-shrink-0"><Columns className="w-4 h-4"/></button>
+        <button onClick={addCurtain} title="Add Curtain" className="p-1.5 rounded-lg text-slate-500 hover:bg-pink-50 hover:text-pink-600 flex-shrink-0"><Wind className="w-4 h-4"/></button>
+
+        <div className="h-5 w-px bg-slate-200 flex-shrink-0"/>
+        <button onClick={()=>{save();setTimeout(()=>navigate(`/workspace/3d/${id}`),600)}} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium transition-all flex-shrink-0">
+          <Box className="w-4 h-4"/><span className="hidden md:inline text-xs">3D View</span>
         </button>
+        <button onClick={save} disabled={saving} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-all disabled:opacity-60 flex-shrink-0">
+          {saving?<span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"/>:<Save className="w-4 h-4"/>}
+          <span className="hidden sm:inline text-xs">Save</span>
+        </button>
+        <button onClick={exportDesignAsJson} title="Export design as JSON" className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-slate-700 text-xs font-medium transition-all flex-shrink-0">JSON</button>
+        <button onClick={exportDesignAsPng} title="Export plan as PNG" className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-slate-700 text-xs font-medium transition-all flex-shrink-0">PNG</button>
       </div>
 
-      <div className="flex flex-1 overflow-hidden relative">
-        <div ref={mountRef} className="flex-1 overflow-hidden touch-none"
-          onPointerDown={onPointerDown} onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp} onPointerLeave={onPointerUp}
-          onWheel={onWheel} style={{ cursor: 'grab' }}
-        />
+      {/* ── BODY ── */}
+      <div className="flex flex-1 overflow-hidden">
 
-        <div className="absolute top-3 right-3 bg-[#0f1628]/85 backdrop-blur rounded-xl border border-white/10 p-3 w-44 z-10 space-y-2">
-          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Lighting</p>
-          {[['Ambient', ambientInt, setAmbientInt, 0, 1, 0.05], ['Sunlight', sunInt, setSunInt, 0, 3, 0.1]].map(([lbl, val, setter, mn, mx, step]) => (
-            <div key={lbl}>
-              <label className="text-xs text-slate-500 flex justify-between"><span>{lbl}</span><span className="text-slate-300">{Math.round(val * 100)}%</span></label>
-              <input type="range" min={mn} max={mx} step={step} className="w-full accent-purple-500" value={val} onChange={e => setter(+e.target.value)} />
-            </div>
-          ))}
-          <p className="text-xs text-slate-600 pt-1 border-t border-white/5">Click to select · Drag selected item to move</p>
-        </div>
-
-        {selectedItem && (
-          <div className="absolute bottom-16 right-3 bg-[#0f1628]/90 backdrop-blur rounded-xl border border-purple-500/30 p-3 w-48 z-10">
-            <p className="text-xs font-semibold text-purple-300 mb-1 flex items-center gap-1.5 truncate">
-              <Box className="w-3.5 h-3.5 flex-shrink-0" /> {selectedItem.label || selectedItem.name}
-            </p>
-            <p className="text-xs text-slate-500 mb-2">Drag item to reposition · buttons for fine control</p>
-            <div className="grid grid-cols-3 gap-1 mb-1">
-              <button onClick={() => moveItem('x', -0.1)} className="bg-white/5 hover:bg-white/10 text-white text-base py-2 rounded-lg font-bold">←</button>
-              <button onClick={() => moveItem('z', -0.1)} className="bg-white/5 hover:bg-white/10 text-white text-base py-2 rounded-lg font-bold">↑</button>
-              <button onClick={() => moveItem('x', 0.1)} className="bg-white/5 hover:bg-white/10 text-white text-base py-2 rounded-lg font-bold">→</button>
-              <button onClick={() => moveItem('ry', -1)} className="bg-white/5 hover:bg-white/10 text-purple-300 text-xs py-2 rounded-lg">↺</button>
-              <button onClick={() => moveItem('z', 0.1)} className="bg-white/5 hover:bg-white/10 text-white text-base py-2 rounded-lg font-bold">↓</button>
-              <button onClick={() => moveItem('ry', 1)} className="bg-white/5 hover:bg-white/10 text-purple-300 text-xs py-2 rounded-lg">↻</button>
-            </div>
-            <p className="text-xs text-slate-600 text-center">10 cm · ↺↻ rotate 90°</p>
-            <div className="mt-2">
-              <div className="flex items-center justify-between text-xs text-slate-300 mb-1">
-                <span>Lift</span>
-                <span>{(selectedItem.elevationM || 0).toFixed(2)} m</span>
-              </div>
-              <input type="range" min="0" max={Math.max(0.1, (cfg.height || 2.8) - (selectedItem.heightM || 0.8))} step="0.05" value={selectedItem.elevationM || 0} onChange={e => liftItem(+e.target.value - (selectedItem.elevationM || 0))} className="w-full accent-purple-400" />
-              <div className="grid grid-cols-2 gap-1 mt-1">
-                <button onClick={() => liftItem(-0.1)} className="text-xs text-white py-1 rounded-lg bg-white/5 hover:bg-white/10">Down</button>
-                <button onClick={() => liftItem(0.1)} className="text-xs text-white py-1 rounded-lg bg-white/5 hover:bg-white/10">Up</button>
-              </div>
-            </div>
-            <button onClick={() => setSelectedId(null)} className="w-full mt-1.5 text-xs text-slate-500 hover:text-slate-300 py-1 text-center">Deselect</button>
+        {/* ══ LEFT PANEL ══ */}
+        <div className={`bg-white border-r border-slate-200 flex flex-col flex-shrink-0 transition-all duration-200 ${leftOpen?'w-64':'w-0 overflow-hidden'}`}>
+          {/* Tabs */}
+          <div className="flex border-b border-slate-100 flex-shrink-0">
+            {[['furniture','🪑 Furniture'],['overlays','🚪 Fixtures'],['room','⚙️ Room']].map(([t,label])=>(
+              <button key={t} onClick={()=>setActiveTab(t)} className={`flex-1 py-2.5 text-xs font-medium transition-colors whitespace-nowrap ${activeTab===t?'border-b-2 border-blue-500 text-blue-600 bg-blue-50/40':'text-slate-500 hover:text-slate-700 hover:bg-slate-50'}`}>{label}</button>
+            ))}
           </div>
-        )}
 
-        <div className="absolute bottom-3 left-3 bg-[#0f1628]/80 rounded-lg px-3 py-1.5 text-xs text-slate-400 pointer-events-none border border-white/5">
-          Drag: orbit · Shift+drag: pan · Scroll: zoom · R: reset · Click: select · Drag selected: move
+          {/* ── Furniture Tab ── */}
+          {activeTab==='furniture'&&<>
+            <div className="p-2 space-y-2 border-b border-slate-100 flex-shrink-0">
+              <input className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300" placeholder="🔍 Search furniture…" value={furSearch} onChange={e=>setFurSearch(e.target.value)}/>
+              {/* Category pills in wrapping rows */}
+              <div className="flex flex-wrap gap-1">
+                {categories.map(c=>(
+                  <button key={c} onClick={()=>setFurCat(c)} className={`text-xs px-2.5 py-1 rounded-full border transition-all font-medium ${furCat===c?'bg-blue-600 text-white border-blue-600':'border-slate-200 text-slate-500 hover:border-blue-300 hover:text-blue-600'}`}>
+                    {CAT_EMOJI[c]||''} {c}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Item list */}
+            <div className="flex-1 overflow-y-auto">
+              {filteredLib.length===0&&<p className="text-center text-xs text-slate-400 pt-10">No items match</p>}
+              <div className="p-1.5 space-y-0.5">
+                {filteredLib.map(f=>(
+                  <div key={f.id} draggable onDragStart={e=>e.dataTransfer.setData('furniture',JSON.stringify(f))}
+                    className="flex items-center gap-2.5 p-2 rounded-lg hover:bg-slate-50 cursor-grab active:cursor-grabbing border border-transparent hover:border-slate-200 transition-all group">
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base flex-shrink-0 shadow-sm" style={{background:(f.color||CAT_COLOR[f.category]||'#93b4fd')+'33',border:`1.5px solid ${(f.color||CAT_COLOR[f.category]||'#93b4fd')}55`}}>
+                      {f.category==='Custom'?<Package className="w-4 h-4 text-violet-500"/>:(CAT_EMOJI[f.category]||'📦')}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold text-slate-800 truncate">{f.name}</p>
+                      <p className="text-xs text-slate-400">
+                        {f.category==='Custom'?<span className="text-violet-500 font-medium">.{f.customModelExt||'3d'} model</span>:`${((f.w||100)/100).toFixed(1)}×${((f.d||80)/100).toFixed(1)} m`}
+                      </p>
+                    </div>
+                    {f.category==='Custom'&&(
+                      <button onClick={ev=>{ev.stopPropagation();removeCustomModel(f.id)}} className="p-1 rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0"><X className="w-3.5 h-3.5"/></button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Custom 3D Models section */}
+            <div className="border-t border-slate-100 flex-shrink-0">
+              <button onClick={()=>setModelsExpanded(!modelsExpanded)} className="w-full flex items-center justify-between px-3 py-2 hover:bg-slate-50 transition-colors">
+                <span className="text-xs font-semibold text-slate-500 flex items-center gap-1.5">
+                  <Package className="w-3.5 h-3.5"/>3D Models
+                  <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${customModels.length>=MAX_CUSTOM_MODELS?'bg-red-100 text-red-600':'bg-slate-100 text-slate-500'}`}>{customModels.length}/{MAX_CUSTOM_MODELS}</span>
+                </span>
+                {modelsExpanded?<ChevronUp className="w-3.5 h-3.5 text-slate-400"/>:<ChevronDown className="w-3.5 h-3.5 text-slate-400"/>}
+              </button>
+              {modelsExpanded&&(
+                <div className="px-2 pb-2 space-y-1.5">
+                  {customModels.length<MAX_CUSTOM_MODELS?(
+                    <button
+                      onClick={()=>fileInputRef.current?.click()}
+                      disabled={uploadingModel}
+                      className={`flex items-center justify-center gap-2 w-full border border-dashed rounded-xl py-2.5 text-xs font-medium transition-all ${uploadingModel?'border-violet-200 text-violet-400 bg-violet-50/50 cursor-wait':'border-slate-300 hover:border-violet-400 text-slate-500 hover:text-violet-600 hover:bg-violet-50/30 cursor-pointer'}`}
+                    >
+                      {uploadingModel?<><span className="w-3.5 h-3.5 border-2 border-violet-300/40 border-t-violet-400 rounded-full animate-spin"/>Processing…</>:<><Upload className="w-3.5 h-3.5"/>Upload .obj / .glb</>}
+                    </button>
+                  ):(
+                    <p className="text-xs text-slate-400 text-center py-1.5 bg-slate-50 rounded-lg">Max {MAX_CUSTOM_MODELS} models reached</p>
+                  )}
+                  <input ref={fileInputRef} type="file" className="hidden" accept=".obj,.glb" onChange={handleModelUpload}/>
+                  <p className="text-xs text-slate-400 text-center">Drag model tile above onto canvas</p>
+                </div>
+              )}
+            </div>
+          </>}
+
+          {/* ── Overlays Tab ── */}
+          {activeTab==='overlays'&&<div className="flex-1 overflow-y-auto p-3 space-y-5">
+            {[
+              ['Doors','door',addDoor,overlays.doors,'doors',DoorOpen,'#3b82f6'],
+              ['Windows','window',addWindow,overlays.windows,'windows',Columns,'#0ea5e9'],
+              ['Curtains','curtain',addCurtain,overlays.curtains,'curtains',Wind,'#ec4899'],
+            ].map(([title,type,adder,list,key,Icon,accent])=>(
+              <div key={type}>
+                <p className="text-xs font-bold text-slate-600 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <Icon className="w-3.5 h-3.5" style={{color:accent}}/>{title}
+                </p>
+                {type==='curtain'&&(
+                  <div className="flex items-center gap-2 mb-2 p-2 bg-slate-50 rounded-lg">
+                    <input type="color" className="w-7 h-7 rounded-md border border-slate-200 p-0.5 cursor-pointer" value={curtainColor} onChange={e=>setCurtainColor(e.target.value)}/>
+                    <span className="text-xs text-slate-500">Color for new curtains</span>
+                  </div>
+                )}
+                <button onClick={adder} className="w-full flex items-center justify-center gap-2 border border-dashed border-slate-300 hover:border-blue-400 rounded-xl px-3 py-2 text-xs text-slate-600 hover:text-blue-600 transition-all font-medium">
+                  <Icon className="w-3.5 h-3.5"/>Add {title.slice(0,-1)}
+                </button>
+                <div className="mt-1 space-y-1">
+                  {list.map((item,i)=>(
+                    <div key={item.id}
+                      className={`flex items-center justify-between rounded-lg px-3 py-2 text-xs cursor-pointer border transition-all ${selectedOverlay?.id===item.id?'bg-blue-50 border-blue-200 text-blue-700':'bg-slate-50 border-transparent text-slate-600 hover:border-slate-200 hover:bg-white'}`}
+                      onClick={()=>{setSelectedOverlay({type,id:item.id});setSelected(null)}}>
+                      <span className="font-medium">{item.name || `${title.slice(0,-1)} ${i+1}`}</span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-slate-400 text-xs">{item.w||80}px</span>
+                        <button onClick={ev=>{ev.stopPropagation();setOverlays(o=>({...o,[key]:o[key].filter(x=>x.id!==item.id)}));setDirty(true)}} className="p-0.5 rounded text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"><X className="w-3 h-3"/></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>}
+
+          {/* ── Room Tab ── */}
+          {activeTab==='room'&&<div className="flex-1 overflow-y-auto p-3 space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-slate-500 block mb-1.5">Shape</label>
+              <select className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300" value={cfg.shape} onChange={e=>{setCfg(c=>({...c,shape:e.target.value}));setDirty(true)}}>
+                <option value="rectangle">Rectangle</option>
+                <option value="square">Square</option>
+                <option value="l-shape">L-Shape</option>
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {[['Width (m)','width'],['Depth (m)','depth']].map(([l,k])=>(
+                <div key={k}>
+                  <label className="text-xs font-semibold text-slate-500 block mb-1.5">{l}</label>
+                  <input type="number" min="2" max="20" step="0.5" className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300" value={cfg[k]} onChange={e=>{setCfg(c=>({...c,[k]:+e.target.value}));setDirty(true)}}/>
+                </div>
+              ))}
+              <div className="col-span-2">
+                <label className="text-xs font-semibold text-slate-500 block mb-1.5">Height (m)</label>
+                <input type="number" min="2" max="6" step="0.1" className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300" value={cfg.height||2.8} onChange={e=>{setCfg(c=>({...c,height:+e.target.value}));setDirty(true)}}/>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-500 block mb-1.5">Wall Color</label>
+              <div className="flex gap-2">
+                <input type="color" className="w-9 h-9 rounded-lg border border-slate-200 cursor-pointer p-0.5 flex-shrink-0" value={cfg.wallColor||'#F5F5F0'} onChange={e=>{setCfg(c=>({...c,wallColor:e.target.value}));setDirty(true)}}/>
+                <input className="flex-1 text-xs border border-slate-200 rounded-lg px-2 bg-slate-50 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300" value={cfg.wallColor||'#F5F5F0'} onChange={e=>{setCfg(c=>({...c,wallColor:e.target.value}));setDirty(true)}}/>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-500 block mb-1.5">Floor Texture</label>
+              <div className="grid grid-cols-5 gap-1.5">
+                {['wood','carpet','tile','marble','concrete'].map(f=>(
+                  <button key={f} onClick={()=>{setCfg(c=>({...c,floorTexture:f}));setDirty(true)}} className={`py-2 rounded-xl text-xs flex flex-col items-center gap-1 border-2 transition-all ${cfg.floorTexture===f?'border-blue-500 bg-blue-50':'border-slate-200 hover:border-slate-300'}`}>
+                    <div className="w-5 h-5 rounded-md" style={{background:FLOOR_COL[f]}}/>
+                    <span className="text-slate-500 capitalize leading-none" style={{fontSize:'9px'}}>{f}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="pt-2 border-t border-slate-100">
+              <button onClick={()=>{if(!window.confirm('Clear all furniture?'))return;pushHistory(JSON.stringify(stateRef.current.items)); setItems([]);setSelected(null);setDirty(true);toast('Cleared')}} className="w-full text-xs text-red-500 hover:bg-red-50 border border-red-200 rounded-lg py-2 transition-all font-medium">
+                🗑 Clear all furniture
+              </button>
+            </div>
+          </div>}
         </div>
-        <div className="absolute bottom-3 right-3 bg-[#0f1628]/80 rounded-lg px-3 py-1.5 text-xs text-slate-400 pointer-events-none border border-white/5">
-          {items.length} items · {cfg.shape || 'rect'} {cfg.width || 5}×{cfg.depth || 4}×{cfg.height || 2.8}m
+
+        {/* Left panel toggle */}
+        <button onClick={()=>setLeftOpen(!leftOpen)} className="absolute z-30 top-1/2 -translate-y-1/2 bg-white border border-slate-200 rounded-r-lg p-1 shadow-sm hover:bg-slate-50 transition-colors" style={{left:leftOpen?'256px':'0',top:'calc(50% + 28px)'}}>
+          <ChevronRight className={`w-4 h-4 text-slate-500 transition-transform ${leftOpen?'rotate-180':''}`}/>
+        </button>
+
+        {/* ══ CANVAS ══ */}
+        <div ref={wrapRef} className="flex-1 relative overflow-hidden">
+          <canvas ref={canvasRef}
+            style={{display:'block',cursor:mode==='pan'?'grab':'default',imageRendering:'crisp-edges'}}
+            onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
+            onContextMenu={e=>e.preventDefault()} onDrop={onDrop} onDragOver={e=>e.preventDefault()}
+          />
+          <div className="absolute bottom-3 left-3 bg-white/95 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-500 font-mono pointer-events-none shadow-sm">
+            {Math.round(zoom*100)}% · {cfg.width||5}×{cfg.depth||4} m · {items.length} items
+          </div>
+          <div className="absolute bottom-3 right-3 bg-white/95 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-500 pointer-events-none hidden lg:block shadow-sm">
+            Scroll: zoom · Drag: move · ▪ corner: resize · ● top: rotate · R:90° · F:fit · Del:delete
+          </div>
         </div>
+
+        {/* ══ RIGHT PROPERTIES PANEL ══ */}
+        <div className={`bg-white border-l border-slate-200 flex flex-col flex-shrink-0 transition-all duration-200 overflow-hidden ${rightOpen?'w-72':'w-0'}`}>
+
+          {/* ── Selected Furniture ── */}
+          {selectedItem&&(<>
+            {/* Header */}
+            <div className="flex items-center gap-2.5 p-3 border-b border-slate-100 flex-shrink-0">
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center text-lg flex-shrink-0" style={{background:(selectedItem.color||'#93b4fd')+'22',border:`1.5px solid ${selectedItem.color||'#93b4fd'}44`}}>
+                {selectedItem.category==='Custom'?<Package className="w-4 h-4 text-violet-500"/>:(CAT_EMOJI[selectedItem.category]||'📦')}
+              </div>
+              <div className="flex-1 min-w-0">
+                <input type="text" value={selectedItem.name || selectedItem.label || ''} onChange={e=>{const next=e.target.value; setItems(p=>p.map(i=>i.id===selected?{...i,name:next,label:next}:i)); setDirty(true)}}
+                  className="w-full text-sm font-bold text-slate-900 truncate border border-slate-200 rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-300"
+                  placeholder="Name this furniture" />
+                <p className="text-xs text-slate-400">{selectedItem.category}</p>
+              </div>
+              <button onClick={()=>setSelected(null)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors flex-shrink-0"><X className="w-4 h-4"/></button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto">
+              {/* ── Dimensions ── */}
+              <div className="p-3 border-b border-slate-100">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">📐 Dimensions</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {[['W','w','widthM'],['D','d','depthM']].map(([l,k,mk])=>(
+                    <div key={k}>
+                      <label className="text-xs text-slate-400 block mb-1">{l} (m)</label>
+                      <input type="number" min="0.2" max="12" step="0.1" className="w-full text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300 text-center font-mono"
+                        value={(selectedItem[k]/GRID).toFixed(2)}
+                        onChange={e=>{const v=Math.max(10,Math.round(+e.target.value*GRID));setItems(p=>p.map(i=>i.id===selected?{...i,[k]:v,[mk]:+e.target.value}:i));setDirty(true)}}/>
+                    </div>
+                  ))}
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1">H (m)</label>
+                    <input type="number" min="0.1" max="3" step="0.05" className="w-full text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300 text-center font-mono"
+                      value={(selectedItem.heightM||0.8).toFixed(2)}
+                      onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,heightM:+e.target.value}:i));setDirty(true)}}/>
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1">Lift (m)</label>
+                    <input type="range" min="0" max={Math.max(0.1, (cfg.height||2.8) - (selectedItem.heightM||0.8))} step="0.05" className="w-full accent-blue-500"
+                      value={selectedItem.elevationM || 0}
+                      onChange={e=>{const maxEl=(cfg.height||2.8)-(selectedItem.heightM||0.8);const nextEl=clamp(+e.target.value,0,maxEl);setItems(p=>p.map(i=>i.id===selected?{...i,elevationM:nextEl}:i));setDirty(true)}}/>
+                    <div className="flex justify-between text-xs text-slate-400"><span>Floor</span><span>Ceiling</span></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Rotation ── */}
+              <div className="p-3 border-b border-slate-100">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">🔄 Rotation</p>
+                <div className="flex items-center gap-2 mb-2.5">
+                  <div className="relative flex-1">
+                    <input type="number" min="0" max="359" step="1"
+                      className="w-full text-sm font-mono border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300 text-center"
+                      value={selectedItem.rotation||0}
+                      onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,rotation:normalRot(e.target.value)}:i));setDirty(true)}}/>
+                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 pointer-events-none">°</span>
+                  </div>
+                  <button onClick={rot90} className="flex items-center gap-1 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-all flex-shrink-0">
+                    <RotateCw className="w-3.5 h-3.5"/>+90°
+                  </button>
+                </div>
+                <input type="range" min="0" max="359" step="1" className="w-full accent-blue-500"
+                  value={selectedItem.rotation||0}
+                  onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,rotation:+e.target.value}:i));setDirty(true)}}/>
+                <div className="flex justify-between text-xs text-slate-300 mt-0.5">
+                  <span>0°</span><span>90°</span><span>180°</span><span>270°</span><span>359°</span>
+                </div>
+              </div>
+
+              {/* ── Color ── */}
+              <div className="p-3 border-b border-slate-100">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">🎨 Color</p>
+                <div className="flex items-center gap-2.5 mb-3">
+                  <input type="color" className="w-10 h-10 rounded-xl border-2 border-slate-200 cursor-pointer p-0.5 flex-shrink-0"
+                    value={selectedItem.color||'#93b4fd'}
+                    onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,color:e.target.value}:i));setDirty(true)}}/>
+                  <input className="flex-1 text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 font-mono uppercase focus:outline-none focus:ring-1 focus:ring-blue-300"
+                    value={selectedItem.color||'#93b4fd'}
+                    onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,color:e.target.value}:i));setDirty(true)}}/>
+                </div>
+                {/* Color presets */}
+                <div className="flex flex-wrap gap-1.5">
+                  {COLOR_PRESETS.map(c=>(
+                    <button key={c} onClick={()=>{setItems(p=>p.map(i=>i.id===selected?{...i,color:c}:i));setDirty(true)}}
+                      className={`w-7 h-7 rounded-full border-2 transition-all hover:scale-110 ${selectedItem.color===c?'border-blue-500 scale-110':'border-white shadow-sm'}`}
+                      style={{background:c}} title={c}/>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div className="p-3 border-t border-slate-100 flex-shrink-0 grid grid-cols-3 gap-2">
+              <button onClick={dup} className="flex flex-col items-center gap-1 py-2.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-600 text-xs font-semibold transition-all">
+                <Copy className="w-4 h-4"/>Duplicate
+              </button>
+              <button onClick={rot90} className="flex flex-col items-center gap-1 py-2.5 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-600 text-xs font-semibold transition-all">
+                <RotateCw className="w-4 h-4"/>Rotate
+              </button>
+              <button onClick={del} className="flex flex-col items-center gap-1 py-2.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-500 text-xs font-semibold transition-all">
+                <Trash2 className="w-4 h-4"/>Delete
+              </button>
+            </div>
+          </>)}
+
+          {/* ── Selected Overlay (Door/Window/Curtain) ── */}
+          {selectedOverlayItem&&selectedOverlay&&!selectedItem&&(<>
+            <div className="flex items-center gap-2.5 p-3 border-b border-slate-100 flex-shrink-0">
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center text-lg flex-shrink-0 bg-slate-100">
+                {selectedOverlay.type==='door'?'🚪':selectedOverlay.type==='window'?'🪟':'🎪'}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-bold text-slate-900 capitalize">{selectedOverlay.type}</p>
+                <input type="text" value={selectedOverlayItem.name || `${selectedOverlay.type} ${selectedOverlayItem.id}`}
+                  onChange={e=>updateOverlay(selectedOverlay.type, selectedOverlay.id, 'name', e.target.value)}
+                  className="w-full text-xs border border-slate-200 rounded-md px-2 py-1 mt-1 focus:outline-none focus:ring-1 focus:ring-blue-300" placeholder={`Name your ${selectedOverlay.type}`} />
+                <p className="text-xs text-slate-400 mt-1">Click and drag to reposition</p>
+              </div>
+              <button onClick={()=>setSelectedOverlay(null)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 flex-shrink-0"><X className="w-4 h-4"/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-3 space-y-4">
+              {/* Width */}
+              <div>
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">📏 Width</p>
+                <div className="flex items-center gap-2 mb-2">
+                  <input type="number" min="40" max="300" step="5"
+                    className="w-20 text-sm font-mono border border-slate-200 rounded-lg px-2 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300 text-center"
+                    value={selectedOverlayItem.w||80}
+                    onChange={e=>updateOverlay(selectedOverlay.type,selectedOverlay.id,'w',Math.max(40,+e.target.value))}/>
+                  <span className="text-xs text-slate-400">px</span>
+                </div>
+                <input type="range" min="40" max="300" step="5" className="w-full accent-blue-500"
+                  value={selectedOverlayItem.w||80}
+                  onChange={e=>updateOverlay(selectedOverlay.type,selectedOverlay.id,'w',+e.target.value)}/>
+              </div>
+              {/* Rotation */}
+              <div>
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">🔄 Rotation</p>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="relative flex-1">
+                    <input type="number" min="0" max="359" step="1"
+                      className="w-full text-sm font-mono border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300 text-center"
+                      value={selectedOverlayItem.rotation||0}
+                      onChange={e=>updateOverlay(selectedOverlay.type,selectedOverlay.id,'rotation',normalRot(e.target.value))}/>
+                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 pointer-events-none">°</span>
+                  </div>
+                  <button onClick={()=>updateOverlay(selectedOverlay.type,selectedOverlay.id,'rotation',normalRot((selectedOverlayItem.rotation||0)+90))}
+                    className="flex items-center gap-1 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex-shrink-0">
+                    <RotateCw className="w-3.5 h-3.5"/>+90°
+                  </button>
+                </div>
+                <input type="range" min="0" max="359" step="1" className="w-full accent-blue-500"
+                  value={selectedOverlayItem.rotation||0}
+                  onChange={e=>updateOverlay(selectedOverlay.type,selectedOverlay.id,'rotation',+e.target.value)}/>
+              </div>
+              {/* Curtain color */}
+              {selectedOverlay.type==='curtain'&&(
+                <div>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">🎨 Color</p>
+                  <div className="flex items-center gap-2.5">
+                    <input type="color" className="w-10 h-10 rounded-xl border-2 border-slate-200 cursor-pointer p-0.5"
+                      value={selectedOverlayItem.color||'#fca5a5'}
+                      onChange={e=>updateOverlay(selectedOverlay.type,selectedOverlay.id,'color',e.target.value)}/>
+                    <input className="flex-1 text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+                      value={selectedOverlayItem.color||'#fca5a5'}
+                      onChange={e=>updateOverlay(selectedOverlay.type,selectedOverlay.id,'color',e.target.value)}/>
+                  </div>
+                </div>
+              )}
+
+              {/* Styles */}
+              {selectedOverlay.type==='door'&&(
+                <div>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">🚪 Style</p>
+                  <select className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300"
+                    value={selectedOverlayItem.style||'single'}
+                    onChange={e=>updateOverlay('door',selectedOverlay.id,'style',e.target.value)}>
+                    <option value="single">Single</option>
+                    <option value="double">Double</option>
+                    <option value="sliding">Sliding</option>
+                  </select>
+                  <div className="mt-2">
+                    <label className="text-xs text-slate-400 block mb-1">Door height (m)</label>
+                    <input type="number" min="1.6" max="3.0" step="0.05"
+                      className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+                      value={(selectedOverlayItem.heightM ?? 2.1)}
+                      onChange={e=>updateOverlay('door',selectedOverlay.id,'heightM',Math.max(1.6,Math.min(3.0,+e.target.value)))}/>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Door color</label>
+                      <input type="color" className="w-full h-9 rounded-lg border border-slate-200 p-1"
+                        value={selectedOverlayItem.color||'#c8965a'}
+                        onChange={e=>updateOverlay('door',selectedOverlay.id,'color',e.target.value)}/>
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Frame color</label>
+                      <input type="color" className="w-full h-9 rounded-lg border border-slate-200 p-1"
+                        value={selectedOverlayItem.frameColor||'#8a6030'}
+                        onChange={e=>updateOverlay('door',selectedOverlay.id,'frameColor',e.target.value)}/>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {selectedOverlay.type==='window'&&(
+                <div>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">🪟 Style</p>
+                  <select className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300"
+                    value={selectedOverlayItem.style||'cross'}
+                    onChange={e=>updateOverlay('window',selectedOverlay.id,'style',e.target.value)}>
+                    <option value="plain">Plain</option>
+                    <option value="cross">Cross</option>
+                    <option value="double">Double</option>
+                  </select>
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Window height (m)</label>
+                      <input type="number" min="0.4" max="2.5" step="0.05"
+                        className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+                        value={(selectedOverlayItem.heightM ?? 1.2)}
+                        onChange={e=>updateOverlay('window',selectedOverlay.id,'heightM',Math.max(0.4,Math.min(2.5,+e.target.value)))}/>
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Sill height (m)</label>
+                      <input type="number" min="0" max="2.2" step="0.05"
+                        className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+                        value={(selectedOverlayItem.sillM ?? 0.9)}
+                        onChange={e=>updateOverlay('window',selectedOverlay.id,'sillM',Math.max(0,Math.min(2.2,+e.target.value)))}/>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Frame color</label>
+                      <input type="color" className="w-full h-9 rounded-lg border border-slate-200 p-1"
+                        value={selectedOverlayItem.frameColor||'#d0d0d0'}
+                        onChange={e=>updateOverlay('window',selectedOverlay.id,'frameColor',e.target.value)}/>
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Glass tint</label>
+                      <input type="color" className="w-full h-9 rounded-lg border border-slate-200 p-1"
+                        value={selectedOverlayItem.glassTint||'#88bbee'}
+                        onChange={e=>updateOverlay('window',selectedOverlay.id,'glassTint',e.target.value)}/>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {selectedOverlay.type==='curtain'&&(
+                <div>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">🎪 Style</p>
+                  <select className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300"
+                    value={selectedOverlayItem.style||'standard'}
+                    onChange={e=>updateOverlay('curtain',selectedOverlay.id,'style',e.target.value)}>
+                    <option value="standard">Standard</option>
+                    <option value="sheer">Sheer</option>
+                    <option value="blackout">Blackout</option>
+                  </select>
+                </div>
+              )}
+            </div>
+            <div className="p-3 border-t border-slate-100 flex-shrink-0">
+              <button onClick={delOverlay} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-500 text-xs font-semibold transition-all">
+                <Trash2 className="w-4 h-4"/>Delete {selectedOverlay.type}
+              </button>
+            </div>
+          </>)}
+        </div>
+
       </div>
     </div>
   )

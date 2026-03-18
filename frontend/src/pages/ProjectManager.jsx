@@ -63,7 +63,7 @@ function ProjectModal({ onClose, onCreate, editData }) {
             <div style={{ display: 'flex', gap: 8 }}>
               {SHAPES.map(s => (
                 <button key={s} onClick={() => setForm(f => ({ ...f, shape: s }))}
-                  style={{ flex: 1, padding: '9px 8px', borderRadius: 10, fontSize: 13, fontWeight: 600, border: `1.5px solid ${form.shape === s ? '#f59e0b' : '#e2e8f0'}`, background: form.shape === s ? '#fffbeb' : '#fff', color: form.shape === s ? '#92400e' : '#64748b', cursor: 'pointer', transition: 'all .15s', textTransform: 'capitalize' }}>
+                  style={{ flex: 1, padding: '9px 8px', borderRadius: 10, fontSize: 13, fontWeight: 600, border: `1.5px solid ${form.shape === s ? '#4c6ef5' : '#e2e8f0'}`, background: form.shape === s ? '#eef2ff' : '#fff', color: form.shape === s ? '#3730a3' : '#64748b', cursor: 'pointer', transition: 'all .15s', textTransform: 'capitalize' }}>
                   {s}
                 </button>
               ))}
@@ -100,8 +100,8 @@ function ProjectModal({ onClose, onCreate, editData }) {
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '0 28px 24px' }}>
           <button onClick={onClose} style={{ padding: '10px 20px', background: '#f8fafc', border: '1.5px solid #e2e8f0', borderRadius: 10, fontSize: 14, fontWeight: 600, color: '#64748b', cursor: 'pointer' }}>Cancel</button>
           <button onClick={handleSave} disabled={saving}
-            style={{ padding: '10px 22px', background: saving ? '#fde68a' : '#f59e0b', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 700, color: '#1a1208', cursor: saving ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 7, boxShadow: '0 2px 12px rgba(245,158,11,.3)' }}>
-            {saving ? <span style={{ width: 14, height: 14, border: '2px solid rgba(15,23,42,.2)', borderTopColor: '#0f172a', borderRadius: '50%', animation: 'spin 1s linear infinite', display: 'inline-block' }} />
+            style={{ padding: '10px 22px', background: saving ? '#93c5fd' : '#4c6ef5', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 700, color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 7, boxShadow: '0 2px 12px rgba(76,110,245,.3)' }}>
+            {saving ? <span style={{ width: 14, height: 14, border: '2px solid rgba(255,255,255,.6)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 1s linear infinite', display: 'inline-block' }} />
               : isEdit ? <Check size={14} /> : <Plus size={14} />}
             {isEdit ? 'Save Changes' : 'Create Project'}
           </button>
@@ -173,9 +173,9 @@ export default function ProjectManager() {
             <p style={{ fontSize: 13, color: '#94a3b8' }}>{projects.length} room design{projects.length !== 1 ? 's' : ''}</p>
           </div>
           <button onClick={() => setShowNew(true)}
-            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '10px 18px', background: '#f59e0b', border: 'none', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#1a1208', cursor: 'pointer', transition: 'all .15s', boxShadow: '0 2px 12px rgba(245,158,11,.25)' }}
-            onMouseEnter={e => { e.currentTarget.style.background = '#fbbf24'; e.currentTarget.style.boxShadow = '0 4px 24px rgba(245,158,11,.4)' }}
-            onMouseLeave={e => { e.currentTarget.style.background = '#f59e0b'; e.currentTarget.style.boxShadow = '0 2px 12px rgba(245,158,11,.25)' }}>
+            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '10px 18px', background: '#4c6ef5', border: 'none', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#fff', cursor: 'pointer', transition: 'all .15s', boxShadow: '0 2px 12px rgba(76,110,245,.25)' }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#4263eb'; e.currentTarget.style.boxShadow = '0 4px 24px rgba(76,110,245,.4)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = '#4c6ef5'; e.currentTarget.style.boxShadow = '0 2px 12px rgba(76,110,245,.25)' }}>
             <Plus size={15} /> New Project
           </button>
         </div>
@@ -189,7 +189,7 @@ export default function ProjectManager() {
               placeholder="Search projects…"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              onFocus={e => e.target.style.borderColor = '#f59e0b'}
+              onFocus={e => e.target.style.borderColor = '#4c6ef5'}
               onBlur={e => e.target.style.borderColor = '#e2e8f0'}
             />
             {search && (
@@ -227,7 +227,9 @@ export default function ProjectManager() {
             <p style={{ fontSize: 14, color: '#94a3b8', marginBottom: 22 }}>{search ? `No projects match "${search}"` : 'Create your first room design to get started'}</p>
             {!search && (
               <button onClick={() => setShowNew(true)}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 22px', background: '#f59e0b', border: 'none', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#1a1208', cursor: 'pointer' }}>
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 22px', background: '#4c6ef5', border: 'none', borderRadius: 11, fontSize: 14, fontWeight: 700, color: '#fff', cursor: 'pointer', transition: 'background .15s' }}
+                onMouseEnter={e => e.currentTarget.style.background = '#4361e5'}
+                onMouseLeave={e => e.currentTarget.style.background = '#4c6ef5'}>
                 <Plus size={15} /> Create Project
               </button>
             )}
@@ -244,7 +246,7 @@ export default function ProjectManager() {
                 <div key={p.id}
                   style={{ background: '#fff', border: '1.5px solid #e2e8f0', borderRadius: 18, overflow: 'hidden', cursor: 'pointer', transition: 'all .2s', position: 'relative', boxShadow: '0 2px 8px rgba(0,0,0,.04)' }}
                   onClick={() => navigate(`/workspace/2d/${p.id}`)}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = '#fcd34d'; e.currentTarget.style.boxShadow = '0 8px 32px rgba(245,158,11,.12)'; e.currentTarget.style.transform = 'translateY(-2px)' }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = '#bfdbfe'; e.currentTarget.style.boxShadow = '0 8px 32px rgba(59,130,246,.12)'; e.currentTarget.style.transform = 'translateY(-2px)' }}
                   onMouseLeave={e => { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,.04)'; e.currentTarget.style.transform = 'none' }}>
                   {/* Thumbnail */}
                   <div style={{ height: 130, position: 'relative', background: p.thumbnailUrl ? `url(${p.thumbnailUrl}) center/cover` : `linear-gradient(135deg,${config.wallColor || '#F5F5F0'}dd,${config.wallColor || '#E8E4DC'}88)`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -261,7 +263,7 @@ export default function ProjectManager() {
                         2D
                       </button>
                       <button onClick={e => { e.stopPropagation(); navigate(`/workspace/3d/${p.id}`) }}
-                        style={{ background: '#f59e0b', color: '#1a1208', border: 'none', borderRadius: 8, padding: '7px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                        style={{ background: '#4c6ef5', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
                         3D
                       </button>
                     </div>
@@ -337,7 +339,7 @@ export default function ProjectManager() {
                       <Layers size={11} /> 2D
                     </button>
                     <button onClick={() => navigate(`/workspace/3d/${p.id}`)}
-                      style={{ padding: '6px 12px', background: '#fffbeb', border: '1.5px solid #fde68a', borderRadius: 8, fontSize: 12, fontWeight: 700, color: '#92400e', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                        style={{ padding: '6px 12px', background: '#4c6ef5', border: '1.5px solid #3b5bdb', borderRadius: 8, fontSize: 12, fontWeight: 700, color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
                       <Box size={11} /> 3D
                     </button>
                     <button onClick={() => handleDelete(p.id)}

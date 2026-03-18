@@ -178,7 +178,7 @@ export default function AdminDashboard() {
                 <div className="space-y-2">
                   {users.slice(0,5).map(u => (
                     <div key={u.id} className="flex items-center gap-3 py-1.5">
-                      <div className="w-8 h-8 rounded-full bg-brand-100 flex items-center justify-center text-brand-700 font-semibold text-sm flex-shrink-0">
+                      <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-semibold text-sm flex-shrink-0">
                         {(u.username||'?')[0].toUpperCase()}
                       </div>
                       <div className="flex-1 min-w-0">
@@ -200,7 +200,7 @@ export default function AdminDashboard() {
                     <div key={cat} className="flex items-center gap-3 mb-2">
                       <span className="text-xs text-surface-600 w-28 flex-shrink-0">{cat}</span>
                       <div className="flex-1 bg-surface-100 rounded-full h-1.5">
-                        <div className="bg-brand-500 h-1.5 rounded-full" style={{ width:`${pct}%` }} />
+                        <div className="bg-blue-500 h-1.5 rounded-full" style={{ width:`${pct}%` }} />
                       </div>
                       <span className="text-xs text-surface-400 w-4 text-right">{count}</span>
                     </div>
@@ -269,7 +269,7 @@ export default function AdminDashboard() {
               <button onClick={() => setShowAdd(true)} className="btn-primary text-sm"><Plus className="w-4 h-4" /> Add Model</button>
             </div>
             {showAdd && (
-              <div className="card p-5 mb-4 border-brand-200 bg-brand-50/30 animate-slide-up">
+              <div className="card p-5 mb-4 border-blue-200 bg-blue-50/30 animate-slide-up">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="font-semibold text-surface-900">Add Furniture</h3>
                   <button onClick={() => setShowAdd(false)} className="text-surface-400"><X className="w-4 h-4" /></button>

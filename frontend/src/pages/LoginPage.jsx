@@ -7,7 +7,7 @@ import { Boxes, Eye, EyeOff, LogIn } from 'lucide-react'
 export default function LoginPage() {
   const [form, setForm] = useState({ username: '', password: '' })
   const [show, setShow] = useState(false)
-  const { login, isLoading } = useAuthStore()
+  const { login, logout, isLoading } = useAuthStore()
   const navigate = useNavigate()
 
   const handleSubmit = async (e) => {
@@ -59,9 +59,18 @@ export default function LoginPage() {
             </div>
             <span className="font-semibold text-slate-900">RoomCraft</span>
           </Link>
+          <button onClick={() => { logout(); navigate('/') }}
+            className="mt-3 text-xs font-medium text-slate-500 hover:text-slate-700 transition">
+            Back to landing (logout)
+          </button>
         </div>
 
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
+          <div className="mb-3 text-right">
+            <button onClick={() => { logout(); navigate('/') }} className="text-xs font-semibold text-slate-500 hover:text-slate-700 transition">
+              ← Back to landing (logout)
+            </button>
+          </div>
           <div className="mb-7">
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight mb-1">Welcome back</h1>
             <p className="text-slate-500 text-sm">Sign in to your account to continue designing</p>
