@@ -1,0 +1,12 @@
+{
+  "name": "roomcraft-model-converter",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Convert 3D models to GLB for RoomCraft",
+  "dependencies": {
+    "assimpjs": "^0.0.10",
+    "fflate": "^0.8.2"
+  }
+}
+

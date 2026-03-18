@@ -3,7 +3,6 @@ package com.roomcraft.controller;
 import com.roomcraft.dto.ProjectDTO;
 import com.roomcraft.dto.UserDTO;
 import com.roomcraft.model.FurnitureModel;
-import com.roomcraft.model.Project;
 import com.roomcraft.repository.FurnitureModelRepository;
 import com.roomcraft.repository.ProjectRepository;
 import com.roomcraft.repository.UserRepository;
@@ -75,6 +74,23 @@ public class AdminController {
     @PostMapping("/furniture")
     public ResponseEntity<FurnitureModel> addFurniture(@RequestBody FurnitureModel model) {
         return ResponseEntity.ok(furnitureModelRepository.save(model));
+    }
+
+    @PutMapping("/furniture/{id}")
+    public ResponseEntity<?> updateFurniture(@PathVariable Long id, @RequestBody Map<String, Object> patch) {
+        return furnitureModelRepository.findById(id).map(m -> {
+            if (patch.containsKey("active")) m.setActive(Boolean.TRUE.equals(patch.get("active")));
+            if (patch.containsKey("visibility")) {
+                try {
+                    m.setVisibility(FurnitureModel.Visibility.valueOf(String.valueOf(patch.get("visibility")).toUpperCase()));
+                } catch (Exception ignored) {}
+            }
+            if (patch.containsKey("name")) m.setName(String.valueOf(patch.get("name")));
+            if (patch.containsKey("category")) m.setCategory(String.valueOf(patch.get("category")));
+            if (patch.containsKey("subcategory")) m.setSubcategory(String.valueOf(patch.get("subcategory")));
+            if (patch.containsKey("tags")) m.setTags(String.valueOf(patch.get("tags")));
+            return ResponseEntity.ok(furnitureModelRepository.save(m));
+        }).orElse(ResponseEntity.notFound().build());
     }
 
     @DeleteMapping("/furniture/{id}")

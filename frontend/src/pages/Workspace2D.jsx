@@ -4,15 +4,16 @@ import React, {
 import { useParams, useNavigate } from 'react-router-dom'
 import { projectsApi, furnitureApi, FURNITURE_LIBRARY, useDesignStore } from '../store/authStore'
 import toast from 'react-hot-toast'
+import { renderTopViewPreview } from '../utils/topViewPreview'
 import {
-  Save, Undo, RotateCw, Trash2, Box,
+  Save, Undo, Redo, RotateCw, Trash2, Box,
   ZoomIn, ZoomOut, MousePointer, ChevronLeft,
   Move, Maximize2, Copy, DoorOpen, Columns,
   Wind, Upload, Package, X, Palette,
   ChevronRight, ChevronDown, ChevronUp
 } from 'lucide-react'
 
-/* ── Constants ── */
+
 const GRID = 50
 const SNAP = 5
 const OX   = 80
@@ -41,7 +42,7 @@ const COLOR_PRESETS = [
 const snapV = v => Math.round(v / SNAP) * SNAP
 const normalRot = v => ((+v % 360) + 360) % 360
 
-/* ── Synchronous base64 (reliable, no FileReader race conditions) ── */
+
 function arrayBufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer)
   let binary = ''
@@ -52,27 +53,47 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary)
 }
 
-/* ── OBJ top-down parser ── */
+function base64ToArrayBuffer(b64) {
+  const bin = atob(b64)
+  const buf = new ArrayBuffer(bin.length)
+  const u8 = new Uint8Array(buf)
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
+  return buf
+}
+
 function parseOBJTopDown(text) {
+
+  if (!text || text.length > 2_000_000) return null
+
   const verts = [], faces = []
-  for (const raw of text.split('\n')) {
+  const maxVerts = 1000 
+  const maxFaces = 500  
+
+  let idx = 0
+  while (idx < text.length && (verts.length < maxVerts || faces.length < maxFaces)) {
+    const next = text.indexOf('\n', idx)
+    const raw = text.substring(idx, next === -1 ? text.length : next)
+    idx = next === -1 ? text.length : next + 1
+
     const p = raw.trim().split(/\s+/)
-    if (p[0] === 'v' && p.length >= 4) {
+    if (p[0] === 'v' && p.length >= 4 && verts.length < maxVerts) {
       const x = parseFloat(p[1]), y = parseFloat(p[2]), z = parseFloat(p[3])
       if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z))
         verts.push([x, y, z])
     }
-    if (p[0] === 'f' && p.length >= 4) {
+    if (p[0] === 'f' && p.length >= 4 && faces.length < maxFaces) {
       const ids = p.slice(1).map(s => {
         const n = parseInt(s.split('/')[0], 10)
         return Number.isFinite(n) ? n - 1 : -1
       })
-      for (let i = 1; i < ids.length - 1; i++) {
+      for (let i = 1; i < ids.length - 1 && faces.length < maxFaces; i++) {
         if (ids[0] >= 0 && ids[i] >= 0 && ids[i+1] >= 0)
           faces.push([ids[0], ids[i], ids[i+1]])
       }
     }
   }
+
+  if (!verts.length || !faces.length) return null
   return { pts2d: verts.map(([x,,z]) => [x, z]), faces }
 }
 
@@ -94,24 +115,28 @@ function parseGLBTopDown(buffer) {
     }
     if (!binChunk) return null
     const pts2d = [], faces = []
+    const maxVerts = 1000 
+    const maxFaces = 500  
     let vertexStart = 0
     for (const mesh of (gltf.meshes || [])) {
+      if (pts2d.length >= maxVerts && faces.length >= maxFaces) break
       for (const prim of (mesh.primitives || [])) {
+        if (pts2d.length >= maxVerts && faces.length >= maxFaces) break
         const at = prim.attributes || {}
         if (at.POSITION == null) continue
         const acc = gltf.accessors[at.POSITION], bv = gltf.bufferViews[acc.bufferView]
         const byteOffset = (bv.byteOffset || 0) + (acc.byteOffset || 0)
-        const count = acc.count || 0
+        const count = Math.min(acc.count || 0, maxVerts - pts2d.length)
         const pos = new Float32Array(binChunk, byteOffset, count * 3)
         for (let i = 0; i < count; i++) pts2d.push([pos[i*3], pos[i*3+2]])
-        if (prim.indices != null) {
+        if (prim.indices != null && faces.length < maxFaces) {
           const iacc = gltf.accessors[prim.indices], ibv = gltf.bufferViews[iacc.bufferView]
           const ioff  = (ibv.byteOffset || 0) + (iacc.byteOffset || 0)
           const icount = iacc.count || 0
           const idx = iacc.componentType === 5125
             ? new Uint32Array(binChunk, ioff, icount)
             : new Uint16Array(binChunk, ioff, icount)
-          for (let i = 0; i + 2 < idx.length; i += 3)
+          for (let i = 0; i + 2 < idx.length && faces.length < maxFaces; i += 3)
             faces.push([vertexStart+idx[i], vertexStart+idx[i+1], vertexStart+idx[i+2]])
         }
         vertexStart += count
@@ -124,11 +149,37 @@ function parseGLBTopDown(buffer) {
   }
 }
 
-/* ── Draw helpers ── */
-function drawModelTopDown(ctx, item, tdData) {
+
+function drawModelTopDown(ctx, item, tdData, opts = {}) {
   if (!tdData?.pts2d?.length) return
+  const {
+    fillStyle = 'rgba(139,92,246,0.12)',
+    strokeStyle = 'rgba(139,92,246,0.75)',
+    lineWidth = 0.9,
+    rotationDeg,
+    isDragging = false,
+  } = opts
   const { pts2d, faces } = tdData
-  const angle  = (item.rotation || 0) * Math.PI / 180
+
+ 
+  if (isDragging && pts2d.length > 50) {
+    const hw = item.w / 2, hd = item.d / 2
+    ctx.save()
+    ctx.fillStyle = fillStyle
+    ctx.strokeStyle = strokeStyle
+    ctx.lineWidth = lineWidth
+    ctx.fillRect(-hw, -hd, item.w, item.d)
+    ctx.strokeRect(-hw, -hd, item.w, item.d)
+    ctx.restore()
+    return
+  }
+
+  // Limit faces for performance - don't draw more than 200 faces
+  const maxFaces = 200
+  const limitedFaces = faces?.slice(0, maxFaces) || []
+
+  // If the caller already rotated the canvas context, pass rotationDeg: 0 to avoid double rotation.
+  const angle  = (rotationDeg != null ? rotationDeg : (item.rotation || 0)) * Math.PI / 180
   const cosA = Math.cos(angle), sinA = Math.sin(angle)
   const rotated = pts2d.map(([x, z]) => [x*cosA - z*sinA, x*sinA + z*cosA])
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
@@ -140,9 +191,11 @@ function drawModelTopDown(ctx, item, tdData) {
   const hw = item.w / 2, hd = item.d / 2
   const sx = item.w / mw, sz = item.d / mz
   ctx.save()
-  ctx.strokeStyle = 'rgba(139,92,246,0.75)'; ctx.fillStyle = 'rgba(139,92,246,0.12)'; ctx.lineWidth = 0.7
-  if (faces?.length) {
-    for (const [i0,i1,i2] of faces) {
+  ctx.strokeStyle = strokeStyle
+  ctx.fillStyle = fillStyle
+  ctx.lineWidth = lineWidth
+  if (limitedFaces.length) {
+    for (const [i0,i1,i2] of limitedFaces) {
       const p0=rotated[i0], p1=rotated[i1], p2=rotated[i2]; if (!p0||!p1||!p2) continue
       ctx.beginPath()
       ctx.moveTo((p0[0]-minX)*sx-hw, (p0[1]-minZ)*sz-hd)
@@ -161,6 +214,57 @@ function drawModelTopDown(ctx, item, tdData) {
   ctx.restore()
 }
 
+function traceFurnitureSilhouette(ctx, item) {
+  const hw = item.w / 2
+  const hd = item.d / 2
+  const cat = item.category
+  const name = (item.name || item.label || '').toLowerCase()
+
+  // Path should be centred at (0,0) in the item's local space.
+  ctx.beginPath()
+
+  if (cat === 'Tables') {
+    // Round tables read much better as ellipses; keep slight corner rounding for rectangular ones.
+    const roundish = name.includes('round') || Math.abs(item.w - item.d) < 14
+    if (roundish) {
+      ctx.ellipse(0, 0, hw, hd, 0, 0, Math.PI * 2)
+    } else {
+      const r = Math.max(6, Math.min(16, Math.min(hw, hd) * 0.22))
+      ctx.roundRect(-hw, -hd, item.w, item.d, r)
+    }
+    return
+  }
+
+  if (cat === 'Seating') {
+    // Sofa/chair: rounded body with a thicker "back" band.
+    const r = Math.max(6, Math.min(18, Math.min(hw, hd) * 0.28))
+    ctx.roundRect(-hw, -hd, item.w, item.d, r)
+    return
+  }
+
+  if (cat === 'Bedroom' && (name.includes('bed') || (!name.includes('wardrobe') && !name.includes('nightstand')))) {
+    // Bed: rounded rectangle with a headboard bulge.
+    const r = Math.max(6, Math.min(16, Math.min(hw, hd) * 0.22))
+    ctx.roundRect(-hw, -hd, item.w, item.d, r)
+    return
+  }
+
+  if (cat === 'Bathroom' && name.includes('bathtub')) {
+    // Bathtub: larger rounding.
+    ctx.roundRect(-hw, -hd, item.w, item.d, Math.max(10, Math.min(hw, hd) * 0.55))
+    return
+  }
+
+  if (cat === 'Lighting' || (cat === 'Decor' && name.includes('plant'))) {
+    // Lamps/plants read better as circles.
+    ctx.ellipse(0, 0, Math.min(hw, hd), Math.min(hw, hd), 0, 0, Math.PI * 2)
+    return
+  }
+
+  // Default: keep a rounded rectangle silhouette (but not a sharp box).
+  ctx.roundRect(-hw, -hd, item.w, item.d, 5)
+}
+
 function roomPoly(cfg) {
   const W = (cfg.width||5)*GRID, D = (cfg.depth||4)*GRID
   if (cfg.shape==='l-shape') {
@@ -176,7 +280,9 @@ function drawDoor(ctx, d, sel) {
   ctx.save(); ctx.translate(d.x,d.y); ctx.rotate((d.rotation||0)*Math.PI/180)
   ctx.strokeStyle='rgba(51,65,85,0.22)'; ctx.lineWidth=0.8; ctx.setLineDash([4,3])
   ctx.beginPath(); ctx.moveTo(0,0); ctx.arc(0,0,dw,0,Math.PI/2); ctx.stroke(); ctx.setLineDash([])
-  ctx.fillStyle='#f1f5f9'; ctx.strokeStyle=sel?'#3b82f6':'#475569'; ctx.lineWidth=sel?2.5:2
+  const doorCol = d.color || '#f1f5f9'
+  const frameCol = d.frameColor || (sel ? '#3b82f6' : '#475569')
+  ctx.fillStyle=doorCol; ctx.strokeStyle=frameCol; ctx.lineWidth=sel?2.5:2
   ctx.beginPath(); ctx.rect(0,-6,dw,12); ctx.fill(); ctx.stroke()
   ctx.fillStyle='#94a3b8'; ctx.beginPath(); ctx.arc(dw-10,0,3.5,0,Math.PI*2); ctx.fill()
   ctx.fillStyle='#334155'; ctx.font='bold 10px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'
@@ -188,13 +294,22 @@ function drawDoor(ctx, d, sel) {
 function drawWindow(ctx, w, sel) {
   const ww=w.w||100
   ctx.save(); ctx.translate(w.x,w.y); ctx.rotate((w.rotation||0)*Math.PI/180)
-  ctx.fillStyle='rgba(147,197,253,0.45)'; ctx.strokeStyle=sel?'#3b82f6':'#2563eb'; ctx.lineWidth=sel?2.5:2
+  const frame = w.frameColor || (sel ? '#3b82f6' : '#2563eb')
+  const glass = w.glassTint || '#93c5fd'
+  ctx.fillStyle = glass + '77'; ctx.strokeStyle=frame; ctx.lineWidth=sel?2.5:2
   ctx.beginPath(); ctx.rect(-ww/2,-8,ww,16); ctx.fill(); ctx.stroke()
-  ctx.strokeStyle='#93c5fd'; ctx.lineWidth=0.8
-  ctx.beginPath(); ctx.moveTo(0,-8); ctx.lineTo(0,8); ctx.stroke()
-  ctx.beginPath(); ctx.moveTo(-ww/2,0); ctx.lineTo(ww/2,0); ctx.stroke()
+  // Style controls mullions
+  const style = (w.style || 'cross').toLowerCase()
+  ctx.strokeStyle = (glass + 'aa'); ctx.lineWidth=0.9
+  if (style === 'cross' || style === 'double') {
+    ctx.beginPath(); ctx.moveTo(0,-8); ctx.lineTo(0,8); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(-ww/2,0); ctx.lineTo(ww/2,0); ctx.stroke()
+  } else if (style === 'double') {
+    ctx.beginPath(); ctx.moveTo(-ww/4,-8); ctx.lineTo(-ww/4,8); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(ww/4,-8); ctx.lineTo(ww/4,8); ctx.stroke()
+  }
   ctx.fillStyle='rgba(255,255,255,0.38)'; ctx.beginPath(); ctx.rect(-ww/2+3,-7,ww/2-6,6); ctx.fill()
-  ctx.fillStyle='#1d4ed8'; ctx.font='bold 9px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'
+  ctx.fillStyle=frame; ctx.font='bold 9px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'
   ctx.fillText('W',0,0)
   if (sel) { ctx.strokeStyle='#3b82f6'; ctx.lineWidth=1.5; ctx.setLineDash([5,3]); ctx.beginPath(); ctx.rect(-ww/2-6,-14,ww+12,28); ctx.stroke(); ctx.setLineDash([]) }
   ctx.restore()
@@ -202,12 +317,15 @@ function drawWindow(ctx, w, sel) {
 
 function drawCurtain(ctx, c, sel) {
   const cw=c.w||120, col=c.color||'#fca5a5'
+  const style=(c.style||'standard').toLowerCase()
+  const alpha = style==='sheer'?0.38:style==='blackout'?0.9:0.65
   ctx.save(); ctx.translate(c.x,c.y); ctx.rotate((c.rotation||0)*Math.PI/180)
   ctx.strokeStyle='#78716c'; ctx.lineWidth=2.5
   ctx.beginPath(); ctx.moveTo(-cw/2-8,-10); ctx.lineTo(cw/2+8,-10); ctx.stroke()
   ctx.fillStyle='#a8a29e'
   ;[-cw/2-8,cw/2+8].forEach(ex=>{ctx.beginPath();ctx.arc(ex,-10,4,0,Math.PI*2);ctx.fill()})
-  ctx.fillStyle=col; ctx.strokeStyle='rgba(0,0,0,0.15)'; ctx.lineWidth=0.7
+  ctx.fillStyle = col + Math.round(alpha*255).toString(16).padStart(2,'0')
+  ctx.strokeStyle='rgba(0,0,0,0.15)'; ctx.lineWidth=0.7
   ctx.beginPath(); ctx.moveTo(-cw/2,-10)
   for (let i=0;i<4;i++){const x1=-cw/2+(i+0.5)*(cw/2)/4+2,x2=-cw/2+(i+1)*(cw/2)/4;ctx.quadraticCurveTo(x1,24,x2,-10)}
   ctx.closePath(); ctx.fill(); ctx.stroke()
@@ -221,9 +339,10 @@ function drawCurtain(ctx, c, sel) {
 function drawFurnDetail(ctx, item, topDownCache) {
   const hw=item.w/2, hd=item.d/2
   ctx.save()
-  // Custom 3D model — show parsed top-down geometry
+  // Custom 3D model top-down silhouette is rendered in the base pass.
+  // Skip here to avoid double-drawing.
   const tdData = item.customModelId && topDownCache ? topDownCache[item.customModelId] : null
-  if (tdData?.pts2d?.length) { drawModelTopDown(ctx,item,tdData); ctx.restore(); return }
+  if (tdData?.pts2d?.length) { ctx.restore(); return }
 
   switch(item.category) {
     case 'Seating': {
@@ -460,8 +579,23 @@ function drawFurnDetail(ctx, item, topDownCache) {
   ctx.restore()
 }
 
+function drawTopPreviewImage(ctx, url, item, imgCache) {
+  if (!url) return false
+  const img = imgCache?.[url]
+  if (!img || !img.complete || img.naturalWidth <= 0) return false
+  const w = item.w, d = item.d
+  const pad = Math.max(3, Math.min(10, Math.min(w, d) * 0.06))
+  // Draw inside the item's bounds (already rotated by caller).
+  ctx.save()
+  ctx.globalAlpha = 0.98
+  ctx.imageSmoothingEnabled = true
+  ctx.drawImage(img, -w / 2 + pad, -d / 2 + pad, w - pad * 2, d - pad * 2)
+  ctx.restore()
+  return true
+}
+
 function draw(canvas, state) {
-  const { cfg, items, overlays, selected, selectedOverlay, zoom, panX, panY, topDownCache } = state
+  const { cfg, items, overlays, selected, selectedOverlay, zoom, panX, panY, topDownCache, imgCache, modelThumbById, isDragging } = state
   const ctx = canvas.getContext('2d')
   const dpr = window.devicePixelRatio || 1
   ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width,canvas.height); ctx.restore()
@@ -557,15 +691,54 @@ function draw(canvas, state) {
     ctx.shadowColor=sel?'rgba(59,130,246,0.4)':'rgba(0,0,0,0.2)'; ctx.shadowBlur=sel?16:8
     ctx.shadowOffsetX=2; ctx.shadowOffsetY=3
     const base=item.color||CAT_COLOR[item.category]||'#93b4fd'
-    ctx.fillStyle=base; ctx.beginPath(); ctx.roundRect(-item.w/2,-item.d/2,item.w,item.d,5); ctx.fill()
+
+    // If we have a real top-view preview image, draw it first (more realistic than shapes).
+    const previewUrl = item.topViewUrl || item.thumbnailUrl || item.previewUrl || modelThumbById?.[item.modelId] || null
+    // Add a soft ground shadow even when using an image preview (so it feels "finished")
+    let drewImg = false
+    if (previewUrl) {
+      ctx.save()
+      ctx.shadowColor = sel ? 'rgba(59,130,246,0.35)' : 'rgba(0,0,0,0.22)'
+      ctx.shadowBlur = sel ? 18 : 12
+      ctx.shadowOffsetX = 2
+      ctx.shadowOffsetY = 3
+      // Use the silhouette as shadow-caster
+      ctx.fillStyle = 'rgba(0,0,0,0.001)'
+      traceFurnitureSilhouette(ctx, item)
+      ctx.fill()
+      ctx.restore()
+      drewImg = drawTopPreviewImage(ctx, previewUrl, item, imgCache)
+    }
+
+    // Custom 3D model — draw true top-down silhouette (no forced rectangle base)
+    const tdData = item.customModelId && topDownCache ? topDownCache[item.customModelId] : null
+    if (tdData?.pts2d?.length) {
+      // If we already drew a preview image, keep the silhouette subtle as a hit/outline aid.
+      drawModelTopDown(ctx, item, tdData, {
+        fillStyle: drewImg ? 'rgba(0,0,0,0.02)' : (base + '26'),
+        strokeStyle: sel ? '#3b82f6' : (drewImg ? 'rgba(0,0,0,0.18)' : (base + 'aa')),
+        lineWidth: sel ? 2.5 : (drewImg ? 1.2 : 1.6),
+        rotationDeg: 0,
+        isDragging: isDragging,
+      })
+    } else {
+      ctx.fillStyle = base
+      traceFurnitureSilhouette(ctx, item)
+      ctx.fill()
+      // Subtle sheen
+      try {
+        const g=ctx.createLinearGradient(-item.w/2,-item.d/2,item.w/2,item.d/2)
+        g.addColorStop(0,'rgba(255,255,255,0.25)'); g.addColorStop(1,'rgba(0,0,0,0.06)')
+        ctx.fillStyle=g
+        traceFurnitureSilhouette(ctx, item)
+        ctx.fill()
+      } catch(_){}
+      // Outline
+      ctx.strokeStyle=sel?'#3b82f6':'rgba(0,0,0,0.25)'; ctx.lineWidth=sel?2.5:1.5
+      traceFurnitureSilhouette(ctx, item)
+      ctx.stroke()
+    }
     ctx.shadowColor='transparent'; ctx.shadowBlur=0; ctx.shadowOffsetX=0; ctx.shadowOffsetY=0
-    try {
-      const g=ctx.createLinearGradient(-item.w/2,-item.d/2,item.w/2,item.d/2)
-      g.addColorStop(0,'rgba(255,255,255,0.25)'); g.addColorStop(1,'rgba(0,0,0,0.06)')
-      ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(-item.w/2,-item.d/2,item.w,item.d,5); ctx.fill()
-    } catch(_){}
-    ctx.strokeStyle=sel?'#3b82f6':'rgba(0,0,0,0.25)'; ctx.lineWidth=sel?2.5:1.5
-    ctx.beginPath(); ctx.roundRect(-item.w/2,-item.d/2,item.w,item.d,5); ctx.stroke()
     drawFurnDetail(ctx,item,topDownCache)
     const fs=Math.max(7,Math.min(13,Math.min(item.w,item.d)/4.5))
     ctx.fillStyle='rgba(15,23,42,0.85)'; ctx.font=`600 ${fs}px DM Sans,system-ui,sans-serif`
@@ -591,6 +764,27 @@ function draw(canvas, state) {
   ctx.restore()
 }
 
+async function makePlanThumbnailBlob(canvas) {
+  const w = 640, h = 360
+  const out = document.createElement('canvas')
+  out.width = w; out.height = h
+  const ctx = out.getContext('2d')
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, w, h)
+
+  const sx = canvas.width, sy = canvas.height
+  const sAspect = sx / sy
+  const oAspect = w / h
+  let dw = w, dh = h, dx = 0, dy = 0
+  if (sAspect > oAspect) { dh = w / sAspect; dy = (h - dh) / 2 }
+  else { dw = h * sAspect; dx = (w - dw) / 2 }
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(canvas, 0, 0, sx, sy, dx, dy, dw, dh)
+
+  return await new Promise((resolve) => out.toBlob(resolve, 'image/png', 0.92))
+}
+
 /* ════════════════════════════════════════════════════
    MAIN COMPONENT
 ════════════════════════════════════════════════════ */
@@ -606,6 +800,8 @@ export default function Workspace2D() {
   const designStore = useDesignStore()
 
   const [project,       setProject]       = useState(null)
+  const [isEditingName, setIsEditingName] = useState(false)
+  const [nameDraft,     setNameDraft]     = useState('')
   const [loading,       setLoading]       = useState(true)
   const [cfg,           setCfg]           = useState({ shape:'rectangle', width:5, depth:4, height:2.8, wallColor:'#F5F5F0', floorTexture:'wood' })
   const [items,         setItems]         = useState([])
@@ -628,16 +824,23 @@ export default function Workspace2D() {
   const [customModels,  setCustomModels]  = useState([])
   const [uploadingModel,setUploadingModel]= useState(false)
   const [topDownCache,  setTopDownCache]  = useState({})
+  const imgCacheRef = useRef({})
+  const [imgCacheTick, setImgCacheTick] = useState(0) // trigger redraw when images load
+  const previewJobsRef = useRef(new Map()) // modelId -> boolean (in-flight)
   const [modelsExpanded,setModelsExpanded]= useState(true)
-  const [catScroll,     setCatScroll]     = useState(0) // eslint-disable-line
+  const [catScroll,     setCatScroll]     = useState(0) 
+  const isDragging = useRef(false) // eslint-disable-line
 
   const stateRef = useRef({})
-  stateRef.current = { cfg, items, overlays, selectedOverlay, selected, zoom, panX, panY, topDownCache, customModels }
+  // Build a quick lookup: backend modelId -> topViewUrl/thumbnailUrl
+  const modelThumbById = useRef({})
+  stateRef.current = { cfg, items, overlays, selectedOverlay, selected, zoom, panX, panY, topDownCache, customModels, imgCache: imgCacheRef.current, modelThumbById: modelThumbById.current, isDragging: isDragging.current }
   const zoomRef = useRef(zoom); useEffect(()=>{ zoomRef.current=zoom },[zoom])
   const panRef  = useRef({x:panX,y:panY}); useEffect(()=>{ panRef.current={x:panX,y:panY} },[panX,panY])
   const drag    = useRef(null)
   const history = useRef([])
-  const isDragging = useRef(false)  // ← prevents store sync during drag frames
+  const redoStack = useRef([])
+ // ← prevents store sync during drag frames
 
   // ── Sync items/overlays/cfg TO shared store whenever they change ──
   // Guard: skip sync while dragging to avoid lag (sync happens on mouseUp instead)
@@ -673,8 +876,8 @@ export default function Workspace2D() {
 
   useEffect(()=>{
     const c=canvasRef.current; if(!c||c.width===0) return
-    draw(c,{cfg,items,overlays,selected,selectedOverlay,zoom,panX,panY,topDownCache})
-  },[cfg,items,overlays,selected,selectedOverlay,zoom,panX,panY,topDownCache])
+    draw(c,{cfg,items,overlays,selected,selectedOverlay,zoom,panX,panY,topDownCache,imgCache:imgCacheRef.current,modelThumbById:modelThumbById.current})
+  },[cfg,items,overlays,selected,selectedOverlay,zoom,panX,panY,topDownCache,imgCacheTick])
 
   useEffect(()=>{
     if(!pendingFit) return
@@ -692,20 +895,90 @@ export default function Workspace2D() {
       let c={shape:'rectangle',width:5,depth:4,height:2.8,wallColor:'#F5F5F0',floorTexture:'wood'}
       try{c=JSON.parse(p.roomConfig)}catch{}
       setCfg(c)
-      let its=[], ov={doors:[],windows:[],curtains:[]}
+      let its=[], ov={doors:[],windows:[],curtains:[]}, cms=[]
       try{
         const saved=JSON.parse(p.furnitureLayout)
-        if(saved?.items){its=Array.isArray(saved.items)?saved.items:[];ov=saved.overlays||ov}
+        if(saved?.items){
+          its=Array.isArray(saved.items)?saved.items:[]
+          ov=saved.overlays||ov
+          cms=Array.isArray(saved.customModels)?saved.customModels:[]
+        }
         else if(Array.isArray(saved)) its=saved
       }catch{}
       setItems(its)
       setOverlays(ov)
+      setCustomModels(cms)
       // ← Push initial data into shared store so 3D can pick it up immediately
-      designStore.loadProject(id, its, ov, c, [])
+      designStore.loadProject(id, its, ov, c, cms)
+      // Initialize history with loaded state
+      history.current = [JSON.stringify({items: its, overlays: ov})]
+      redoStack.current = []
       setPendingFit(true)
     }).catch(()=>{toast.error('Failed to load project');navigate('/projects')}).finally(()=>setLoading(false))
-    furnitureApi.getAll().then(d=>{if(d?.length) setLibrary(d)}).catch(()=>{})
+    furnitureApi.getAll().then(d=>{
+      if(d?.length) setLibrary(d)
+    }).catch(()=>{})
   },[id]) // eslint-disable-line
+
+  // Rebuild top-down cache from persisted custom model data (so silhouettes stay identical after 3D round-trips)
+  useEffect(() => {
+    if (!customModels?.length) return
+    const missing = customModels.filter(m => m?.id && m?.b64 && m?.ext && !topDownCache[m.id])
+    if (!missing.length) return
+    const next = {}
+    for (const m of missing) {
+      try {
+        const buf = base64ToArrayBuffer(m.b64)
+        if (m.ext === 'obj') {
+          const text = new TextDecoder().decode(buf)
+          const td = parseOBJTopDown(text)
+          if (td?.pts2d?.length) next[m.id] = td
+        } else if (m.ext === 'glb') {
+          const td = parseGLBTopDown(buf)
+          if (td?.pts2d?.length) next[m.id] = td
+        }
+      } catch (e) {
+        console.warn('Failed rebuilding top-down cache for', m.id, e)
+      }
+    }
+    if (Object.keys(next).length) setTopDownCache(prev => ({ ...prev, ...next }))
+  }, [customModels]) // eslint-disable-line
+
+  // Preload preview images from backend library + customModels
+  useEffect(() => {
+    const srcs = new Set()
+    // backend library
+    ;(library || []).forEach(m => {
+      if (m?.id != null) {
+        const url = m.topViewUrl || m.thumbnailUrl
+        if (url) {
+          modelThumbById.current[m.id] = url
+          srcs.add(url)
+        }
+      }
+    })
+    // custom models previews (data URLs)
+    ;(customModels || []).forEach(m => {
+      if (m?.previewUrl) srcs.add(m.previewUrl)
+    })
+    // items may contain their own urls
+    ;(items || []).forEach(i => {
+      const url = i.topViewUrl || i.thumbnailUrl || i.previewUrl
+      if (url) srcs.add(url)
+    })
+
+    for (const url of srcs) {
+      if (imgCacheRef.current[url]) continue
+      const img = new Image()
+      // Needed so the 2D canvas can be exported (thumbnail) even when it draws images.
+      // Works with `/files/*` since backend now allows cross-origin for static assets.
+      if (!String(url).startsWith('data:')) img.crossOrigin = 'anonymous'
+      img.onload = () => setImgCacheTick(t => t + 1)
+      img.onerror = () => {}
+      img.src = url
+      imgCacheRef.current[url] = img
+    }
+  }, [library, customModels, items])
 
   const centerView = useCallback(()=>{
     const canvas=canvasRef.current; if(!canvas||canvas.width===0) return
@@ -773,20 +1046,41 @@ export default function Workspace2D() {
       const canvas=canvasRef.current; if(canvas) draw(canvas,stateRef.current)
       d.pendingX=nx; d.pendingY=ny; d.hasPending=true
     }
-    else if(d.type==='rotate'){const angle=Math.atan2(wy-d.cy,wx-d.cx)*180/Math.PI+90;setItems(p=>p.map(i=>i.id===d.id?{...i,rotation:normalRot(Math.round(angle))}:i));setDirty(true)}
-    else if(d.type==='resize'){setItems(p=>p.map(i=>i.id===d.id?{...i,w:Math.max(20,snapV(d.startW+(wx-d.mx))),d:Math.max(20,snapV(d.startD+(wy-d.my)))}:i));setDirty(true)}
-    else if(d.type==='overlay-move'){const key=d.overlayType==='door'?'doors':d.overlayType==='window'?'windows':'curtains';setOverlays(o=>({...o,[key]:o[key].map(x=>x.id===d.id?{...x,x:snapV(wx-d.offX),y:snapV(wy-d.offY)}:x)}));setDirty(true)}
+    else if(d.type==='rotate'){
+      const angle=Math.atan2(wy-d.cy,wx-d.cx)*180/Math.PI+90
+      stateRef.current.items=stateRef.current.items.map(i=>i.id===d.id?{...i,rotation:normalRot(Math.round(angle))}:i)
+      const canvas=canvasRef.current; if(canvas) draw(canvas,stateRef.current)
+      d.hasPending=true
+    }
+    else if(d.type==='resize'){
+      const nw=Math.max(20,snapV(d.startW+(wx-d.mx)))
+      const nd=Math.max(20,snapV(d.startD+(wy-d.my)))
+      stateRef.current.items=stateRef.current.items.map(i=>i.id===d.id?{...i,w:nw,d:nd}:i)
+      const canvas=canvasRef.current; if(canvas) draw(canvas,stateRef.current)
+      d.hasPending=true
+    }
+    else if(d.type==='overlay-move'){
+      const key=d.overlayType==='door'?'doors':d.overlayType==='window'?'windows':'curtains'
+      stateRef.current.overlays={...stateRef.current.overlays,[key]:stateRef.current.overlays[key].map(x=>x.id===d.id?{...x,x:snapV(wx-d.offX),y:snapV(wy-d.offY)}:x)}
+      const canvas=canvasRef.current; if(canvas) draw(canvas,stateRef.current)
+      d.hasPending=true
+    }
   },[screenToWorld]) // eslint-disable-line
 
   const onMouseUp=useCallback(()=>{
-    if(drag.current?.type==='move'&&drag.current.hasPending){
-      const{id:did,pendingX,pendingY}=drag.current
-      // Commit to React state, then sync to store
-      setItems(p=>{
-        const next=p.map(i=>i.id===did?{...i,x:pendingX,y:pendingY}:i)
-        designStore.setItems(next)  // ← sync store after commit
-        return next
-      })
+    if(drag.current?.hasPending){
+      if(['move','rotate','resize'].includes(drag.current.type)){
+        pushHistory(); // Save state before applying drag changes
+        const next=stateRef.current.items
+        setItems(next)
+        designStore.setItems(next)
+      }
+      if(drag.current?.type==='overlay-move'){
+        pushHistory(); // Save state before applying overlay drag changes
+        const next=stateRef.current.overlays
+        setOverlays(next)
+        designStore.setOverlays(next)
+      }
       setDirty(true)
     }
     isDragging.current=false
@@ -813,36 +1107,67 @@ export default function Workspace2D() {
     const canvas=canvasRef.current, rect=canvas.getBoundingClientRect()
     const wx=(e.clientX-rect.left-panRef.current.x)/zoomRef.current
     const wy=(e.clientY-rect.top-panRef.current.y)/zoomRef.current
-    const pw=Math.max(20,Math.round((model.w||100)/100*GRID))
-    const pd=Math.max(20,Math.round((model.d||80)/100*GRID))
+    // Backend models use meters: width/depth/height. Built-in library uses cm-ish: w/d/h.
+    const widthM  = Number.isFinite(+model.width) ? +model.width : (model.w != null ? (model.w / 100) : 1)
+    const depthM  = Number.isFinite(+model.depth) ? +model.depth : (model.d != null ? (model.d / 100) : 0.8)
+    const heightM = Number.isFinite(+model.height) ? +model.height : (model.h != null ? (model.h / 100) : 0.8)
+    const pw=Math.max(20,Math.round(widthM*GRID))
+    const pd=Math.max(20,Math.round(depthM*GRID))
     const customModelEntry=model.customModelId?(stateRef.current.customModels||[]).find(m=>m.id===model.customModelId):null
     const newItem={
       id:Date.now(),label:model.name,name:model.name,category:model.category||'Custom',
       color:model.color||CAT_COLOR[model.category]||'#c4b5fd',
       x:snapV(wx-pw/2),y:snapV(wy-pd/2),w:pw,d:pd,rotation:0,
-      modelId:model.id,widthM:(model.w||100)/100,depthM:(model.d||80)/100,heightM:(model.h||80)/100,
+      modelId:model.id,widthM,depthM,heightM,
       customModelId:model.customModelId||null,
       customModelExt:model.customModelExt||null,
       customModelB64:customModelEntry?.b64||null,
+      topViewUrl: model.topViewUrl || model.thumbnailUrl || model.previewUrl || null,
+      modelUrl: model.modelUrl || null,
     }
     history.current.push(JSON.stringify(stateRef.current.items))
     setItems(prev=>[...prev,newItem]); setSelected(newItem.id); setSelectedOverlay(null); setDirty(true)
   },[])
 
-  const pushHistory=()=>{ history.current.push(JSON.stringify(stateRef.current.items)); if(history.current.length>80) history.current.shift() }
-  const undo=useCallback(()=>{ if(!history.current.length){toast('Nothing to undo');return}; setItems(JSON.parse(history.current.pop())); setSelected(null); setDirty(true) },[])
+  const pushHistory=()=>{ 
+    history.current.push(JSON.stringify({items: stateRef.current.items, overlays: stateRef.current.overlays})); 
+    if(history.current.length>80) history.current.shift();
+    redoStack.current = []; // Clear redo stack when new changes are made
+  }
+  const undo=useCallback(()=>{ 
+    if(!history.current.length){toast('Nothing to undo');return}; 
+    redoStack.current.push(JSON.stringify({items: stateRef.current.items, overlays: stateRef.current.overlays})); // Save current state for redo
+    const prevState = JSON.parse(history.current.pop());
+    setItems(prevState.items); 
+    setOverlays(prevState.overlays);
+    setSelected(null); 
+    setSelectedOverlay(null);
+    setDirty(true) 
+  },[])
+  const redo=useCallback(()=>{ 
+    if(!redoStack.current.length){toast('Nothing to redo');return}; 
+    history.current.push(JSON.stringify({items: stateRef.current.items, overlays: stateRef.current.overlays})); // Save current state for undo
+    const nextState = JSON.parse(redoStack.current.pop());
+    setItems(nextState.items); 
+    setOverlays(nextState.overlays);
+    setSelected(null); 
+    setSelectedOverlay(null);
+    setDirty(true) 
+  },[])
   const rot90=useCallback(()=>{ const s=stateRef.current.selected; if(!s) return; pushHistory(); setItems(p=>p.map(i=>i.id===s?{...i,rotation:((i.rotation||0)+90)%360}:i)); setDirty(true) },[])
   const del=useCallback(()=>{ const s=stateRef.current.selected; if(!s) return; pushHistory(); setItems(p=>p.filter(i=>i.id!==s)); setSelected(null); setDirty(true) },[])
   const dup=useCallback(()=>{ const s=stateRef.current.selected; if(!s) return; pushHistory(); const src=stateRef.current.items.find(i=>i.id===s); if(!src) return; const ni={...src,id:Date.now(),x:src.x+25,y:src.y+25}; setItems(p=>[...p,ni]); setSelected(ni.id); setDirty(true) },[])
 
   const delOverlay=useCallback(()=>{
     const ov=stateRef.current.selectedOverlay; if(!ov) return
+    pushHistory();
     const key=ov.type==='door'?'doors':ov.type==='window'?'windows':'curtains'
     setOverlays(o=>({...o,[key]:o[key].filter(x=>x.id!==ov.id)}))
     setSelectedOverlay(null); setDirty(true)
   },[])
 
   const updateOverlay=useCallback((type,ovId,field,value)=>{
+    pushHistory();
     const key=type==='door'?'doors':type==='window'?'windows':'curtains'
     setOverlays(o=>({...o,[key]:o[key].map(x=>x.id===ovId?{...x,[field]:value}:x)}))
     setDirty(true)
@@ -855,24 +1180,26 @@ export default function Workspace2D() {
       if(e.key==='r'||e.key==='R') rot90()
       if(e.key==='d'||e.key==='D') dup()
       if((e.ctrlKey||e.metaKey)&&e.key==='z'){e.preventDefault();undo()}
+      if((e.ctrlKey||e.metaKey)&&e.key==='y'){e.preventDefault();redo()}
+      if((e.ctrlKey||e.metaKey)&&e.shiftKey&&e.key==='Z'){e.preventDefault();redo()}
       if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();save()}
       if(e.key==='Escape'){setSelected(null);setSelectedOverlay(null)}
       if(e.key===' '){e.preventDefault();setMode(m=>m==='pan'?'select':'pan')}
       if(e.key==='f'||e.key==='F') centerView()
     }
     window.addEventListener('keydown',h); return()=>window.removeEventListener('keydown',h)
-  },[del,rot90,dup,undo,centerView]) // eslint-disable-line
+  },[del,rot90,dup,undo,redo,centerView]) // eslint-disable-line
 
-  const addDoor=()=>{ setOverlays(o=>({...o,doors:[...o.doors,{id:Date.now(),x:OX+10,y:OY,rotation:0,w:80}]})); setDirty(true); toast('Door added') }
-  const addWindow=()=>{ setOverlays(o=>({...o,windows:[...o.windows,{id:Date.now(),x:OX+(stateRef.current.cfg.width||5)*GRID/2,y:OY,rotation:0,w:100}]})); setDirty(true); toast('Window added') }
-  const addCurtain=()=>{ setOverlays(o=>({...o,curtains:[...o.curtains,{id:Date.now(),x:OX+(stateRef.current.cfg.width||5)*GRID/2,y:OY+8,rotation:0,w:120,color:curtainColor}]})); setDirty(true); toast('Curtain added') }
+  const addWindow=()=>{ pushHistory(); setOverlays(o=>({...o,windows:[...o.windows,{id:Date.now(),x:OX+(stateRef.current.cfg.width||5)*GRID/2,y:OY,rotation:0,w:100,frameColor:'#d0d0d0',glassTint:'#88bbee',style:'cross',heightM:1.2,sillM:0.9}]})); setDirty(true); toast('Window added') }
+  const addCurtain=()=>{ pushHistory(); setOverlays(o=>({...o,curtains:[...o.curtains,{id:Date.now(),x:OX+(stateRef.current.cfg.width||5)*GRID/2,y:OY+8,rotation:0,w:120,color:curtainColor,style:'standard'}]})); setDirty(true); toast('Curtain added') }
+  const addDoor=()=>{ pushHistory(); setOverlays(o=>({...o,doors:[...o.doors,{id:Date.now(),x:OX+10,y:OY,rotation:0,w:80,color:'#c8965a',frameColor:'#8a6030',style:'single',heightM:2.1}]})); setDirty(true); toast('Door added') }
 
   /* ── Model upload (fixed: synchronous base64 + ref-based file trigger) ── */
   const handleModelUpload=useCallback(async e=>{
     const file=e.target.files?.[0]; if(!file) return
     e.target.value=''  // reset immediately so same file can be re-selected
     const ext=file.name.split('.').pop().toLowerCase()
-    if(ext!=='obj'&&ext!=='glb'){toast.error('Only .obj and .glb supported');return}
+    if(!ext){toast.error('File must have an extension');return}
     if(file.size>20*1024*1024){toast.error('File too large (max 20 MB)');return}
     const currentCount=stateRef.current.customModels?.length??0
     if(currentCount>=MAX_CUSTOM_MODELS){toast.error(`Maximum ${MAX_CUSTOM_MODELS} custom models`);return}
@@ -883,17 +1210,50 @@ export default function Workspace2D() {
       const modelName=file.name.replace(/\.\w+$/,'')
       // Synchronous base64 — no FileReader races
       const b64=arrayBufferToBase64(buf)
-      let tdData=null
-      try{
-        if(ext==='obj'){const text=new TextDecoder().decode(buf);tdData=parseOBJTopDown(text)}
-        else if(ext==='glb'){tdData=parseGLBTopDown(buf)}
-      }catch(parseErr){console.warn('Top-down parse failed:',parseErr)}
-      if(tdData?.pts2d?.length>0){
-        setTopDownCache(prev=>({...prev,[modelId]:tdData}))
-      }
       setCustomModels(prev=>{
         if(prev.length>=MAX_CUSTOM_MODELS) return prev
-        return[...prev,{id:modelId,name:modelName,ext,b64}]
+        return[...prev,{id:modelId,name:modelName,ext,b64,previewUrl:null}]
+      })
+      const schedule = window.requestIdleCallback || ((fn) => setTimeout(() => fn({ timeRemaining: () => 0 }), 50))
+      schedule(() => {
+        try {
+          let tdData = null
+          if(ext==='obj'){
+            const text=new TextDecoder().decode(buf)
+            tdData=parseOBJTopDown(text)
+            // Check if model was truncated for performance
+            const vertexCount = (text.match(/\nv /g) || []).length
+            const faceCount = (text.match(/\nf /g) || []).length
+            if (vertexCount > 1000 || faceCount > 500) {
+              toast(`Model simplified for performance (${vertexCount}→${tdData.pts2d.length} vertices, ${faceCount}→${tdData.faces.length} faces)`)
+            }
+          } else if(ext==='glb'){
+            tdData=parseGLBTopDown(buf)
+          }
+          if(tdData?.pts2d?.length>0){
+            setTopDownCache(prev=>({...prev,[modelId]:tdData}))
+          }
+        } catch(parseErr) {
+          console.warn('Top-down parse failed:',parseErr)
+        }
+      })
+
+      // Generate the preview *in the background* to avoid freezing on big models.
+      // (Keeps full quality; just defers the heavy work.)
+      const scheduleIdle = window.requestIdleCallback || ((fn) => setTimeout(() => fn({ timeRemaining: () => 0 }), 50))
+      scheduleIdle(async () => {
+        if (previewJobsRef.current.get(modelId)) return
+        previewJobsRef.current.set(modelId, true)
+        try {
+          if (ext === 'glb' || ext === 'obj') {
+            const previewUrl = await renderTopViewPreview({ ext, buffer: buf, size: 320, bg: '#ffffff' })
+            setCustomModels(prev => prev.map(m => m.id === modelId ? { ...m, previewUrl } : m))
+          }
+        } catch (pvErr) {
+          console.warn('Top view preview render failed:', pvErr)
+        } finally {
+          previewJobsRef.current.delete(modelId)
+        }
       })
       toast.success(`"${modelName}" loaded — drag to place`)
     }catch(err){
@@ -905,6 +1265,7 @@ export default function Workspace2D() {
   },[]) // reads via stateRef
 
   const removeCustomModel=useCallback(modelId=>{
+    pushHistory(); // Save state before removing items
     setCustomModels(prev=>prev.filter(m=>m.id!==modelId))
     setTopDownCache(prev=>{ const n={...prev}; delete n[modelId]; return n })
     setItems(prev=>prev.filter(i=>i.customModelId!==modelId))
@@ -913,7 +1274,25 @@ export default function Workspace2D() {
 
   const save=async()=>{
     setSaving(true)
-    try{await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays})});setDirty(false);toast.success('Saved!')}
+    try{
+      await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays,customModels})})
+      setDirty(false)
+      toast.success('Saved!')
+      // Thumbnail is "best effort" and should never fail the main Save.
+      ;(async () => {
+        try {
+          const canvas = canvasRef.current
+          if (!canvas) return
+          const blob = await makePlanThumbnailBlob(canvas)
+          if (!blob) return
+          const fd = new FormData()
+          fd.append('thumbnailPng', blob, `plan_${id}.png`)
+          await projectsApi.uploadThumbnail(id, fd)
+        } catch (e) {
+          console.warn('Thumbnail upload failed (ignored):', e)
+        }
+      })()
+    }
     catch{toast.error('Save failed')}finally{setSaving(false)}
   }
 
@@ -924,17 +1303,26 @@ export default function Workspace2D() {
     clearTimeout(autoSaveTimer.current)
     autoSaveTimer.current=setTimeout(async()=>{
       try{
-        await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays})})
+        await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays,customModels})})
         setDirty(false)
       }catch(e){ console.warn('Auto-save failed',e) }
     },1500)
     return()=>clearTimeout(autoSaveTimer.current)
-  },[dirty,items,overlays,cfg,id]) // eslint-disable-line
+  },[dirty,items,overlays,customModels,cfg,id]) // eslint-disable-line
 
   /* ── Derived ── */
   const fullLibrary=[
     ...library,
-    ...customModels.map(m=>({id:m.id,name:m.name,category:'Custom',color:'#c4b5fd',w:100,d:100,h:100,customModelId:m.id,customModelExt:m.ext}))
+    ...customModels.map(m=>({
+      id:m.id,
+      name:m.name,
+      category:'Custom',
+      color:'#c4b5fd',
+      w:100,d:100,h:100,
+      customModelId:m.id,
+      customModelExt:m.ext,
+      previewUrl: m.previewUrl || null,
+    }))
   ]
   const categories=['All',...new Set(fullLibrary.map(f=>f.category))]
   const filteredLib=fullLibrary.filter(f=>(furCat==='All'||f.category===furCat)&&f.name.toLowerCase().includes(furSearch.toLowerCase()))
@@ -963,7 +1351,43 @@ export default function Workspace2D() {
           <ChevronLeft className="w-4 h-4"/><span className="hidden sm:inline text-xs font-medium">Projects</span>
         </button>
         <div className="h-5 w-px bg-slate-200 flex-shrink-0"/>
-        <span className="font-semibold text-slate-900 text-sm truncate max-w-[120px] flex-shrink-0">{project?.name||'…'}</span>
+        {isEditingName ? (
+          <input
+            autoFocus
+            value={nameDraft}
+            onChange={e => setNameDraft(e.target.value)}
+            onBlur={async () => {
+              setIsEditingName(false)
+              const next = nameDraft.trim() || 'Untitled'
+              setProject(p => p ? { ...p, name: next } : p)
+              try {
+                await projectsApi.update(id, {
+                  name: next,
+                  roomConfig: JSON.stringify(cfg),
+                  furnitureLayout: JSON.stringify({ items, overlays, customModels }),
+                })
+                setProject(p => p ? { ...p, name: next } : p)
+              } catch (err) {
+                toast.error('Failed to rename project')
+              }
+            }}
+            onKeyDown={async e => {
+              if (e.key === 'Enter') {
+                e.target.blur()
+              }
+              if (e.key === 'Escape') {
+                setIsEditingName(false)
+              }
+            }}
+            className="w-40 bg-slate-100 border border-slate-300 rounded px-2 py-1 text-xs"
+          />
+        ) : (
+          <span
+            className="font-semibold text-slate-900 text-sm truncate max-w-[120px] flex-shrink-0 cursor-pointer hover:text-slate-700"
+            onClick={() => { setNameDraft(project?.name || ''); setIsEditingName(true) }}
+            title="Click to rename"
+          >{project?.name||'Untitled'}</span>
+        )}
         <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-semibold flex-shrink-0">2D</span>
         {dirty&&<span className="text-xs text-amber-500 flex-shrink-0">● Unsaved</span>}
         <div className="flex-1"/>
@@ -990,6 +1414,7 @@ export default function Workspace2D() {
         <button onClick={dup} disabled={!selected} title="Duplicate" className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-30 flex-shrink-0"><Copy className="w-4 h-4"/></button>
         <button onClick={del} disabled={!selected} title="Delete" className="p-1.5 rounded-lg text-red-400 hover:bg-red-50 disabled:opacity-30 flex-shrink-0"><Trash2 className="w-4 h-4"/></button>
         <button onClick={undo} title="Undo (Ctrl+Z)" className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 flex-shrink-0"><Undo className="w-4 h-4"/></button>
+        <button onClick={redo} title="Redo (Ctrl+Y / Ctrl+Shift+Z)" className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 flex-shrink-0"><Redo className="w-4 h-4"/></button>
 
         <div className="h-5 w-px bg-slate-200 flex-shrink-0"/>
 
@@ -1115,7 +1540,7 @@ export default function Workspace2D() {
                       <span className="font-medium">{title.slice(0,-1)} {i+1}</span>
                       <div className="flex items-center gap-1">
                         <span className="text-slate-400 text-xs">{item.w||80}px</span>
-                        <button onClick={ev=>{ev.stopPropagation();setOverlays(o=>({...o,[key]:o[key].filter(x=>x.id!==item.id)}));setDirty(true)}} className="p-0.5 rounded text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"><X className="w-3 h-3"/></button>
+                        <button onClick={ev=>{ev.stopPropagation();pushHistory();setOverlays(o=>({...o,[key]:o[key].filter(x=>x.id!==item.id)}));setDirty(true)}} className="p-0.5 rounded text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"><X className="w-3 h-3"/></button>
                       </div>
                     </div>
                   ))}
@@ -1219,14 +1644,14 @@ export default function Workspace2D() {
                       <label className="text-xs text-slate-400 block mb-1">{l} (m)</label>
                       <input type="number" min="0.2" max="12" step="0.1" className="w-full text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300 text-center font-mono"
                         value={(selectedItem[k]/GRID).toFixed(2)}
-                        onChange={e=>{const v=Math.max(10,Math.round(+e.target.value*GRID));setItems(p=>p.map(i=>i.id===selected?{...i,[k]:v,[mk]:+e.target.value}:i));setDirty(true)}}/>
+                        onChange={e=>{pushHistory(); const v=Math.max(10,Math.round(+e.target.value*GRID));setItems(p=>p.map(i=>i.id===selected?{...i,[k]:v,[mk]:+e.target.value}:i));setDirty(true)}}/>
                     </div>
                   ))}
                   <div>
                     <label className="text-xs text-slate-400 block mb-1">H (m)</label>
                     <input type="number" min="0.1" max="3" step="0.05" className="w-full text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300 text-center font-mono"
                       value={(selectedItem.heightM||0.8).toFixed(2)}
-                      onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,heightM:+e.target.value}:i));setDirty(true)}}/>
+                      onChange={e=>{pushHistory(); setItems(p=>p.map(i=>i.id===selected?{...i,heightM:+e.target.value}:i));setDirty(true)}}/>
                   </div>
                 </div>
               </div>
@@ -1239,7 +1664,7 @@ export default function Workspace2D() {
                     <input type="number" min="0" max="359" step="1"
                       className="w-full text-sm font-mono border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300 text-center"
                       value={selectedItem.rotation||0}
-                      onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,rotation:normalRot(e.target.value)}:i));setDirty(true)}}/>
+                      onChange={e=>{pushHistory(); setItems(p=>p.map(i=>i.id===selected?{...i,rotation:normalRot(e.target.value)}:i));setDirty(true)}}/>
                     <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 pointer-events-none">°</span>
                   </div>
                   <button onClick={rot90} className="flex items-center gap-1 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-all flex-shrink-0">
@@ -1248,7 +1673,7 @@ export default function Workspace2D() {
                 </div>
                 <input type="range" min="0" max="359" step="1" className="w-full accent-blue-500"
                   value={selectedItem.rotation||0}
-                  onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,rotation:+e.target.value}:i));setDirty(true)}}/>
+                  onChange={e=>{pushHistory(); setItems(p=>p.map(i=>i.id===selected?{...i,rotation:+e.target.value}:i));setDirty(true)}}/>
                 <div className="flex justify-between text-xs text-slate-300 mt-0.5">
                   <span>0°</span><span>90°</span><span>180°</span><span>270°</span><span>359°</span>
                 </div>
@@ -1260,15 +1685,15 @@ export default function Workspace2D() {
                 <div className="flex items-center gap-2.5 mb-3">
                   <input type="color" className="w-10 h-10 rounded-xl border-2 border-slate-200 cursor-pointer p-0.5 flex-shrink-0"
                     value={selectedItem.color||'#93b4fd'}
-                    onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,color:e.target.value}:i));setDirty(true)}}/>
+                    onChange={e=>{pushHistory(); setItems(p=>p.map(i=>i.id===selected?{...i,color:e.target.value}:i));setDirty(true)}}/>
                   <input className="flex-1 text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 font-mono uppercase focus:outline-none focus:ring-1 focus:ring-blue-300"
                     value={selectedItem.color||'#93b4fd'}
-                    onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,color:e.target.value}:i));setDirty(true)}}/>
+                    onChange={e=>{pushHistory(); setItems(p=>p.map(i=>i.id===selected?{...i,color:e.target.value}:i));setDirty(true)}}/>
                 </div>
                 {/* Color presets */}
                 <div className="flex flex-wrap gap-1.5">
                   {COLOR_PRESETS.map(c=>(
-                    <button key={c} onClick={()=>{setItems(p=>p.map(i=>i.id===selected?{...i,color:c}:i));setDirty(true)}}
+                    <button key={c} onClick={()=>{pushHistory(); setItems(p=>p.map(i=>i.id===selected?{...i,color:c}:i));setDirty(true)}}
                       className={`w-7 h-7 rounded-full border-2 transition-all hover:scale-110 ${selectedItem.color===c?'border-blue-500 scale-110':'border-white shadow-sm'}`}
                       style={{background:c}} title={c}/>
                   ))}
@@ -1349,6 +1774,97 @@ export default function Workspace2D() {
                       value={selectedOverlayItem.color||'#fca5a5'}
                       onChange={e=>updateOverlay(selectedOverlay.type,selectedOverlay.id,'color',e.target.value)}/>
                   </div>
+                </div>
+              )}
+
+              {/* Styles */}
+              {selectedOverlay.type==='door'&&(
+                <div>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">🚪 Style</p>
+                  <select className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300"
+                    value={selectedOverlayItem.style||'single'}
+                    onChange={e=>updateOverlay('door',selectedOverlay.id,'style',e.target.value)}>
+                    <option value="single">Single</option>
+                    <option value="double">Double</option>
+                    <option value="sliding">Sliding</option>
+                  </select>
+                  <div className="mt-2">
+                    <label className="text-xs text-slate-400 block mb-1">Door height (m)</label>
+                    <input type="number" min="1.6" max="3.0" step="0.05"
+                      className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+                      value={(selectedOverlayItem.heightM ?? 2.1)}
+                      onChange={e=>updateOverlay('door',selectedOverlay.id,'heightM',Math.max(1.6,Math.min(3.0,+e.target.value)))}/>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Door color</label>
+                      <input type="color" className="w-full h-9 rounded-lg border border-slate-200 p-1"
+                        value={selectedOverlayItem.color||'#c8965a'}
+                        onChange={e=>updateOverlay('door',selectedOverlay.id,'color',e.target.value)}/>
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Frame color</label>
+                      <input type="color" className="w-full h-9 rounded-lg border border-slate-200 p-1"
+                        value={selectedOverlayItem.frameColor||'#8a6030'}
+                        onChange={e=>updateOverlay('door',selectedOverlay.id,'frameColor',e.target.value)}/>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {selectedOverlay.type==='window'&&(
+                <div>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">🪟 Style</p>
+                  <select className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300"
+                    value={selectedOverlayItem.style||'cross'}
+                    onChange={e=>updateOverlay('window',selectedOverlay.id,'style',e.target.value)}>
+                    <option value="plain">Plain</option>
+                    <option value="cross">Cross</option>
+                    <option value="double">Double</option>
+                  </select>
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Window height (m)</label>
+                      <input type="number" min="0.4" max="2.5" step="0.05"
+                        className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+                        value={(selectedOverlayItem.heightM ?? 1.2)}
+                        onChange={e=>updateOverlay('window',selectedOverlay.id,'heightM',Math.max(0.4,Math.min(2.5,+e.target.value)))}/>
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Sill height (m)</label>
+                      <input type="number" min="0" max="2.2" step="0.05"
+                        className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+                        value={(selectedOverlayItem.sillM ?? 0.9)}
+                        onChange={e=>updateOverlay('window',selectedOverlay.id,'sillM',Math.max(0,Math.min(2.2,+e.target.value)))}/>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Frame color</label>
+                      <input type="color" className="w-full h-9 rounded-lg border border-slate-200 p-1"
+                        value={selectedOverlayItem.frameColor||'#d0d0d0'}
+                        onChange={e=>updateOverlay('window',selectedOverlay.id,'frameColor',e.target.value)}/>
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Glass tint</label>
+                      <input type="color" className="w-full h-9 rounded-lg border border-slate-200 p-1"
+                        value={selectedOverlayItem.glassTint||'#88bbee'}
+                        onChange={e=>updateOverlay('window',selectedOverlay.id,'glassTint',e.target.value)}/>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {selectedOverlay.type==='curtain'&&(
+                <div>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">🎪 Style</p>
+                  <select className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300"
+                    value={selectedOverlayItem.style||'standard'}
+                    onChange={e=>updateOverlay('curtain',selectedOverlay.id,'style',e.target.value)}>
+                    <option value="standard">Standard</option>
+                    <option value="sheer">Sheer</option>
+                    <option value="blackout">Blackout</option>
+                  </select>
                 </div>
               )}
             </div>

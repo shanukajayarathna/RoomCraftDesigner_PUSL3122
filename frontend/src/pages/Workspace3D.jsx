@@ -88,11 +88,25 @@ function buildRoom(T, cfg, opts = {}) {
 
   // --- Floor ---
   const ft = cfg.floorTexture || 'wood'
+  const floorTex =
+    ft === 'wood' ? woodTex(T)
+      : ft === 'carpet' ? fabricTex(T, '#7a6a88')
+        : ft === 'tile' ? tileTex(T)
+          : ft === 'marble' ? marbleTex(T)
+            : concreteTex(T)
+  // Repeats: ~1m tiles/planks feel right; clamp to avoid huge repeats.
+  floorTex.repeat.set(Math.max(1, Math.min(12, W * 1.2)), Math.max(1, Math.min(12, D * 1.2)))
+  floorTex.anisotropy = 8
   const floorMat = new T.MeshStandardMaterial({
-    color: ft === 'wood' ? 0xb8865a : ft === 'carpet' ? 0x7a6a88 : ft === 'tile' ? 0xd8d8d8 : ft === 'marble' ? 0xe8e4de : 0xaaaaaa,
-    roughness: ft === 'marble' ? 0.05 : ft === 'tile' ? 0.25 : 0.85,
-    metalness: ft === 'marble' ? 0.1 : 0,
+    map: floorTex,
+    color: 0xffffff,
+    roughness: ft === 'marble' ? 0.12 : ft === 'tile' ? 0.35 : ft === 'wood' ? 0.78 : 0.95,
+    metalness: ft === 'marble' ? 0.08 : 0,
   })
+  // Reduce z-fighting with furniture bottoms and overlay indicators.
+  floorMat.polygonOffset = true
+  floorMat.polygonOffsetFactor = 1
+  floorMat.polygonOffsetUnits = 1
   const floorMesh = buildFloorOrCeiling(T, dims, floorMat, 0)
   floorMesh.name = 'floor'
   group.add(floorMesh)
@@ -115,16 +129,30 @@ function buildRoom(T, cfg, opts = {}) {
   const wThick = 0.12
   const opacity = wallMode === 'solid' ? 1 : wallMode === 'transparent' ? 0.3 : wallMode === 'glass' ? 0.1 : 0
   const wallColor = wallMode === 'glass' ? new T.Color(0.55, 0.78, 1) : hex2color(T, cfg.wallColor || '#F5F5F0')
+  const wallTex = plasterTex(T)
   const wallMat = new T.MeshStandardMaterial({
-    color: wallColor, roughness: wallMode === 'glass' ? 0.05 : 0.82, metalness: wallMode === 'glass' ? 0.15 : 0,
+    map: wallMode === 'solid' ? wallTex : null,
+    color: wallColor,
+    roughness: wallMode === 'glass' ? 0.05 : 0.86,
+    metalness: wallMode === 'glass' ? 0.15 : 0,
     transparent: wallMode !== 'solid', opacity, side: T.DoubleSide,
   })
 
   wallSegments(dims).forEach((seg, idx) => {
     const dx = seg.x2 - seg.x1, dz = seg.z2 - seg.z1
     const len = Math.sqrt(dx * dx + dz * dz); if (len < 0.001) return
-    const geo = new T.BoxGeometry(len, H, wThick)
-    const mesh = new T.Mesh(geo, wallMat.clone())
+    // Extend walls slightly so corners overlap (prevents visible gaps).
+    const overlap = wThick * 0.95
+    const geo = new T.BoxGeometry(len + overlap, H, wThick)
+    const mat = wallMat.clone()
+    if (mat.map) {
+      mat.map = mat.map.clone()
+      mat.map.wrapS = mat.map.wrapT = T.RepeatWrapping
+      // Horizontal repeat based on wall length, vertical based on height.
+      mat.map.repeat.set(Math.max(1, Math.min(12, len * 1.4)), Math.max(1, Math.min(8, H * 1.2)))
+      mat.map.needsUpdate = true
+    }
+    const mesh = new T.Mesh(geo, mat)
     mesh.position.set((seg.x1 + seg.x2) / 2, H / 2, (seg.z1 + seg.z2) / 2)
     mesh.rotation.y = Math.atan2(dz, dx)
     mesh.castShadow = showShadows && wallMode === 'solid'; mesh.receiveShadow = true
@@ -148,6 +176,7 @@ function makeCanvasTexture(T, size, drawFn) {
   drawFn(canvas.getContext('2d'), size)
   const tex = new T.CanvasTexture(canvas)
   tex.wrapS = tex.wrapT = T.RepeatWrapping
+  tex.anisotropy = 8
   return tex
 }
 
@@ -218,6 +247,34 @@ function tileTex(T) {
   })
 }
 
+function plasterTex(T) {
+  return makeCanvasTexture(T, 256, (ctx, s) => {
+    ctx.fillStyle = '#f2f1ea'
+    ctx.fillRect(0, 0, s, s)
+    // soft speckle
+    for (let i = 0; i < 1800; i++) {
+      const x = Math.random() * s
+      const y = Math.random() * s
+      const r = Math.random() * 1.8
+      const a = Math.random() * 0.06
+      ctx.fillStyle = `rgba(120,120,120,${a})`
+      ctx.beginPath()
+      ctx.arc(x, y, r, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    // faint trowel strokes
+    ctx.strokeStyle = 'rgba(110,110,110,0.06)'
+    ctx.lineWidth = 2
+    for (let i = 0; i < 18; i++) {
+      const y = (i / 18) * s + (Math.random() * 6 - 3)
+      ctx.beginPath()
+      ctx.moveTo(0, y)
+      ctx.bezierCurveTo(s * 0.3, y + (Math.random() * 16 - 8), s * 0.7, y + (Math.random() * 16 - 8), s, y + (Math.random() * 10 - 5))
+      ctx.stroke()
+    }
+  })
+}
+
 function buildFurnitureMesh(T, item) {
   const group = new T.Group(); group.userData.itemId = item.id
   const wM = item.widthM || (item.w / GRID2D)
@@ -225,6 +282,7 @@ function buildFurnitureMesh(T, item) {
   const hM = item.heightM || 0.8
   const hexColor = item.color || CAT_COLOR[item.category] || '#93b4fd'
   const col = hex2color(T, hexColor)
+  const EPS = 0.0025
 
   // ── Realistic per-category materials ──
   let mainMat, darkMat, lightMat, metalMat, glassMat
@@ -264,7 +322,32 @@ function buildFurnitureMesh(T, item) {
   metalMat = new T.MeshStandardMaterial({ color:0x999999, roughness:0.25, metalness:0.85 })
   glassMat = new T.MeshStandardMaterial({ color:0x88bbff, roughness:0.05, metalness:0.1, transparent:true, opacity:0.35 })
 
-  const box = (w, h, d, x, y, z, mat) => { const m=new T.Mesh(new T.BoxGeometry(w,h,d),mat||mainMat); m.position.set(x,y,z); m.castShadow=true; m.receiveShadow=true; group.add(m) }
+  const applyMatQuality = (mat) => {
+    if (!mat) return
+    mat.dithering = true
+    mat.polygonOffset = true
+    mat.polygonOffsetFactor = -1
+    mat.polygonOffsetUnits = -1
+    if (mat.envMapIntensity == null) mat.envMapIntensity = 0.85
+  }
+  ;[mainMat, darkMat, lightMat, metalMat, glassMat].forEach(applyMatQuality)
+
+  const safe = (v) => Math.max(0.001, v - EPS)
+  const box = (w, h, d, x, y, z, mat) => {
+    const mm = mat || mainMat
+    const m = new T.Mesh(new T.BoxGeometry(safe(w), safe(h), safe(d)), mm)
+    // Small y-nudge reduces internal z-fighting between stacked parts.
+    m.position.set(x, y + EPS, z)
+    m.castShadow = true; m.receiveShadow = true
+    group.add(m)
+    // Edge highlight for "finished" look
+    const egeo = new T.EdgesGeometry(m.geometry, 28)
+    const el = new T.LineSegments(egeo, new T.LineBasicMaterial({ color: 0x0b1220, transparent: true, opacity: 0.12 }))
+    el.position.copy(m.position)
+    el.rotation.copy(m.rotation)
+    el.scale.copy(m.scale)
+    group.add(el)
+  }
   const cyl = (rt, rb, h, x, y, z, seg, mat) => { const m=new T.Mesh(new T.CylinderGeometry(rt,rb,h,seg||16),mat||mainMat); m.position.set(x,y,z); m.castShadow=true; group.add(m) }
   const sph = (r, x, y, z, mat) => { const m=new T.Mesh(new T.SphereGeometry(r,12,10),mat||mainMat); m.position.set(x,y,z); m.castShadow=true; group.add(m) }
   const legs = (fw, fd, lh, lr, mat) => { [[-fw/2+lr,lh/2,-fd/2+lr],[-fw/2+lr,lh/2,fd/2-lr],[fw/2-lr,lh/2,-fd/2+lr],[fw/2-lr,lh/2,fd/2-lr]].forEach(([lx,ly,lz])=>box(lr*2,lh,lr*2,lx,ly,lz,mat||darkMat)) }
@@ -634,12 +717,16 @@ function b64ToBuffer(b64) {
 
 function scaleModelToFit(T, group, wM, hM, dM) {
   const box3 = new T.Box3().setFromObject(group)
-  const sz = new T.Vector3(); box3.getSize(sz)
+  const size = new T.Vector3(); box3.getSize(size)
   const center = new T.Vector3(); box3.getCenter(center)
-  if (sz.x > 0 && sz.y > 0 && sz.z > 0) {
-    group.scale.set(wM / sz.x, hM / sz.y, dM / sz.z)
-    // Re-center so the group origin is at the bottom-centre of the model
-    group.position.set(-center.x * (wM / sz.x), -center.y * (hM / sz.y) + hM / 2, -center.z * (dM / sz.z))
+  const min = box3.min
+  if (size.x > 0 && size.y > 0 && size.z > 0) {
+    const sx = wM / size.x
+    const sy = hM / size.y
+    const szf = dM / size.z
+    group.scale.set(sx, sy, szf)
+    // Keep X/Z centered, place bottom at floor Y=0.
+    group.position.set(-center.x * sx, -min.y * sy, -center.z * szf)
   }
 }
 
@@ -691,25 +778,31 @@ export default function Workspace3D() {
   const orbitRef  = useRef({ theta: 0.7, phi: 0.62, radius: 8, tx: 2.5, ty: 1.4, tz: 2 })
   const ptrRef    = useRef({ down: false, moved: false, x: 0, y: 0, button: 0 })
   const dragFurnRef = useRef(null)
+  const dragRafRef = useRef(null)
+  const modelCacheRef = useRef(new Map()) // modelUrl -> Promise<THREE.Group>
 
   // ── Shared design store — read live data from 2D workspace ──
   const designStore = useDesignStore()
 
   const [loading,     setLoading]     = useState(true)
   const [project,     setProject]     = useState(null)
+  const [isEditingName, setIsEditingName] = useState(false)
+  const [nameDraft, setNameDraft] = useState('')
   const [cfg,         setCfg]         = useState({})
   const [items,       setItems]       = useState([])
   const [overlays,    setOverlays]    = useState({ doors: [], windows: [], curtains: [] })
+  const [customModels,setCustomModels]= useState([])
   const [dirty,       setDirty]       = useState(false)
   const [saving,      setSaving]      = useState(false)
   const [selectedId,  setSelectedId]  = useState(null)
-  const [wallMode,    setWallMode]    = useState('solid')
+  const wallMode = designStore.wallMode || 'solid'
+  const setWallMode = designStore.setWallMode
   const [showCeiling, setShowCeiling] = useState(false)
   const [showShadows, setShowShadows] = useState(true)
   const [showGrid,    setShowGrid]    = useState(false)
   const [ambientInt,  setAmbientInt]  = useState(0.6)
   const [sunInt,      setSunInt]      = useState(1.1)
-
+  // Rendering quality is fixed to "best" (no dropdown)
   const cfgRef      = useRef(cfg);         useEffect(() => { cfgRef.current = cfg }, [cfg])
   const itemsRef    = useRef(items);       useEffect(() => { itemsRef.current = items }, [items])
   const overlaysRef = useRef(overlays);    useEffect(() => { overlaysRef.current = overlays }, [overlays])
@@ -724,6 +817,16 @@ export default function Workspace3D() {
     designStore.syncFromStorage()
   }, []) // eslint-disable-line
 
+  // If 2D and 3D are open in different tabs/windows, keep in sync in real time.
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (!e?.key) return
+      if (e.key.startsWith('rc_design_')) designStore.syncFromStorage()
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, []) // eslint-disable-line
+
   // ── Keep local state in sync with shared store ──
   useEffect(() => {
     if (designStore.items.length > 0 || items.length === 0) setItems(designStore.items)
@@ -734,6 +837,9 @@ export default function Workspace3D() {
   useEffect(() => {
     if (designStore.cfg && Object.keys(designStore.cfg).length > 0) setCfg(designStore.cfg)
   }, [designStore.cfg]) // eslint-disable-line
+  useEffect(() => {
+    setCustomModels(designStore.customModels || [])
+  }, [designStore.customModels]) // eslint-disable-line
 
   useEffect(() => {
     setLoading(true)
@@ -754,20 +860,37 @@ export default function Workspace3D() {
       TRef.current = T
       const mount = mountRef.current
       const W = mount.clientWidth || 900, H = mount.clientHeight || 600
-      const renderer = new T.WebGLRenderer({ antialias: true })
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); renderer.setSize(W, H)
+      const renderer = new T.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.5)); renderer.setSize(W, H)
       renderer.shadowMap.enabled = true; renderer.shadowMap.type = T.PCFSoftShadowMap
-      renderer.toneMapping = T.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.15
+      renderer.toneMapping = T.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.22
       renderer.outputEncoding = T.sRGBEncoding
+      renderer.physicallyCorrectLights = true
       mount.appendChild(renderer.domElement); rdrRef.current = renderer
       const scene = new T.Scene()
       scene.background = new T.Color(0x1a2035); scene.fog = new T.FogExp2(0x1a2035, 0.04)
       sceneRef.current = scene
-      const camera = new T.PerspectiveCamera(52, W / H, 0.05, 80); camRef.current = camera
+      // High-end "studio" environment lighting for better realism on PBR materials.
+      import('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/environments/RoomEnvironment.js')
+        .then(({ RoomEnvironment }) => {
+          try {
+            const pmrem = new T.PMREMGenerator(renderer)
+            const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
+            scene.environment = envTex
+            pmrem.dispose()
+          } catch {}
+        })
+        .catch(() => {})
+      // Larger near plane + tighter far plane improves depth precision and reduces z-fighting flicker.
+      const dims0 = roomDims(cfgRef.current)
+      const far0 = Math.max(dims0.W, dims0.D) * 12
+      const camera = new T.PerspectiveCamera(52, W / H, 0.35, Math.max(40, Math.min(160, far0))); camRef.current = camera
       const amb = new T.AmbientLight(0xffeedd, ambientInt); amb.name = 'ambient'; scene.add(amb)
       const sun = new T.DirectionalLight(0xfff5e0, sunInt); sun.name = 'sun'; sun.position.set(6, 10, 4); sun.castShadow = true
-      sun.shadow.mapSize.set(2048, 2048); sun.shadow.camera.near = 0.5; sun.shadow.camera.far = 30
-      sun.shadow.camera.left = sun.shadow.camera.bottom = -14; sun.shadow.camera.right = sun.shadow.camera.top = 14
+      sun.shadow.mapSize.set(4096, 4096); sun.shadow.camera.near = 0.5; sun.shadow.camera.far = Math.max(30, Math.min(120, Math.max(dims0.W, dims0.D) * 8))
+      const shadowSize = Math.max(dims0.W, dims0.D) * 2.4
+      sun.shadow.camera.left = sun.shadow.camera.bottom = -shadowSize
+      sun.shadow.camera.right = sun.shadow.camera.top = shadowSize
       sun.shadow.bias = -0.001; scene.add(sun)
       const fill = new T.DirectionalLight(0x99ccff, 0.32); fill.position.set(-5, 3, -3); scene.add(fill)
       const pt1 = new T.PointLight(0xffddaa, 0.7, 10); pt1.position.set(2, 2.4, 2); scene.add(pt1)
@@ -775,7 +898,7 @@ export default function Workspace3D() {
       scene.add(buildRoom(T, cfgRef.current, { wallMode: wallModeRef.current, showCeiling: ceilRef.current, showShadows: shadowRef.current, showGrid: gridRef.current }))
       const fGroup = new T.Group(); fGroup.name = 'furniture'; scene.add(fGroup); fGroupRef.current = fGroup
       const ovGroup = new T.Group(); ovGroup.name = 'overlays'; scene.add(ovGroup); ovGroupRef.current = ovGroup
-      populateFurniture(T, fGroup, itemsRef.current)
+      populateFurniture(T, fGroup, itemsRef.current, shadowRef.current)
       populateOverlays(T, ovGroup, overlaysRef.current, cfgRef.current)
       const dims = roomDims(cfgRef.current)
       orbitRef.current = { theta: 0.7, phi: 0.62, radius: Math.max(dims.W, dims.D) * 1.7, tx: dims.W / 2, ty: dims.H * 0.5, tz: dims.D / 2 }
@@ -801,9 +924,9 @@ export default function Workspace3D() {
     const fg = fGroupRef.current; if (!fg) return
     import('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js').then(T => {
       while (fg.children.length) fg.remove(fg.children[0])
-      populateFurniture(T, fg, items)
+      populateFurniture(T, fg, items, showShadows)
     })
-  }, [items]) // eslint-disable-line
+  }, [items, showShadows]) // eslint-disable-line
 
   useEffect(() => {
     const og = ovGroupRef.current; if (!og) return
@@ -819,60 +942,171 @@ export default function Workspace3D() {
     if (a) a.intensity = ambientInt; if (s) s.intensity = sunInt
   }, [ambientInt, sunInt])
 
-  async function populateFurniture(T, group, its) {
+  async function loadModelFromUrl(T, url) {
+    if (!url) throw new Error('Missing modelUrl')
+    const cache = modelCacheRef.current
+    if (cache.has(url)) return cache.get(url)
+
+    const p = (async () => {
+      const ext = (url.split('?')[0].split('#')[0].split('.').pop() || '').toLowerCase()
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`Fetch failed (${res.status})`)
+      const buf = await res.arrayBuffer()
+
+      if (ext === 'obj') {
+        const text = new TextDecoder().decode(buf)
+        const geo = parseOBJ(T, text)
+        // NOTE: OBJ alone doesn't carry materials/textures reliably (needs .mtl + images).
+        // We keep a neutral material; to preserve "exact colors/textures", prefer GLB.
+        const mat = new T.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.75, metalness: 0.02 })
+        const m = new T.Mesh(geo, mat); m.castShadow = true; m.receiveShadow = true
+        const g = new T.Group(); g.add(m)
+        return g
+      }
+
+      // Default to GLB parser (also covers ext-less /files/{uuid})
+      return await parseGLB(T, buf)
+    })()
+
+    cache.set(url, p)
+    return p
+  }
+
+  async function populateFurniture(T, group, its, showShadows = true) {
     for (const item of its) {
       if (item.x == null || item.y == null) continue
       let mesh
-      if (item.customModelId && item.customModelB64 && item.customModelExt) {
+      if (item.modelUrl && typeof item.modelUrl === 'string') {
+        try {
+          const base = await loadModelFromUrl(T, item.modelUrl)
+          mesh = base.clone(true)
+        } catch (err) {
+          console.warn('ModelUrl load failed, using fallback:', err)
+          mesh = buildFurnitureMesh(T, item)
+        }
+      } else if (item.customModelId && item.customModelB64 && item.customModelExt) {
         try {
           const buf = b64ToBuffer(item.customModelB64)
           if (item.customModelExt === 'obj') {
             const text = new TextDecoder().decode(buf)
             const geo = parseOBJ(T, text)
-            const mat = new T.MeshStandardMaterial({ color: hex2color(T, item.color || '#c4b5fd'), roughness: 0.65 })
-            const m = new T.Mesh(geo, mat); m.castShadow = true; m.receiveShadow = true
+            const color = item.color ? hex2color(T, item.color) : new T.Color(0x8f8f8f)
+            const mat = new T.MeshStandardMaterial({ color, roughness: 0.65 })
+            const m = new T.Mesh(geo, mat)
+            m.castShadow = true; m.receiveShadow = true
             mesh = new T.Group(); mesh.add(m)
-          } else { mesh = await parseGLB(T, buf) }
-          mesh.userData.itemId = item.id
-          const wM = item.widthM || (item.w / GRID2D), hM = item.heightM || 0.8, dM = item.depthM || (item.d / GRID2D)
-          scaleModelToFit(T, mesh, wM, hM, dM)
-        } catch (err) { console.warn('Custom model parse failed, using fallback:', err); mesh = buildFurnitureMesh(T, item) }
-      } else { mesh = buildFurnitureMesh(T, item) }
+          } else {
+            mesh = await parseGLB(T, buf)
+          }
+        } catch (err) {
+          console.warn('Custom model parse failed, using fallback:', err)
+          mesh = buildFurnitureMesh(T, item)
+        }
+      } else {
+        mesh = buildFurnitureMesh(T, item)
+      }
+
+      if (!mesh) mesh = buildFurnitureMesh(T, item)
+      mesh.userData.itemId = item.id
+      const wM = item.widthM || (item.w / GRID2D)
+      const hM = item.heightM || 0.8
+      const dM = item.depthM || (item.d / GRID2D)
+      scaleModelToFit(T, mesh, wM, hM, dM)
+
+      mesh.traverse((o) => {
+        if (o.isMesh) {
+          o.castShadow = !!showShadows
+          o.receiveShadow = !!showShadows
+        }
+        if (o.isMesh && o.material) {
+          const mats = Array.isArray(o.material) ? o.material : [o.material]
+          mats.forEach((m) => {
+            if (m && 'polygonOffset' in m) {
+              m.polygonOffset = true
+              m.polygonOffsetFactor = -1
+              m.polygonOffsetUnits = -1
+            }
+            if (m && m.envMapIntensity == null) m.envMapIntensity = 0.9
+            ;['map', 'roughnessMap', 'metalnessMap', 'normalMap', 'aoMap', 'emissiveMap'].forEach((k) => {
+              const t = m?.[k]
+              if (t && typeof t === 'object' && 'anisotropy' in t) t.anisotropy = Math.max(t.anisotropy || 1, 8)
+            })
+          })
+        }
+      })
+
       const pos = itemTo3D(item)
-      mesh.position.set(pos.x, 0, pos.z); mesh.rotation.y = pos.ry
+      mesh.position.set(pos.x, 0, pos.z)
+      mesh.rotation.y = pos.ry
       group.add(mesh)
+
+      // Yield occasionally to keep UI responsive when many models load.
+      await new Promise((resolve) => setTimeout(resolve, 0))
     }
   }
 
   // ── Render doors, windows, curtains in 3D ──────────────────────────────────
   function populateOverlays(T, group, ovs, roomCfg) {
     const H = (roomCfg?.height) || 2.8
-    const doorMat = new T.MeshStandardMaterial({ color: 0xc8965a, roughness: 0.75, metalness: 0 })
-    const doorFrameMat = new T.MeshStandardMaterial({ color: 0x8a6030, roughness: 0.8 })
-    const glassMat = new T.MeshStandardMaterial({ color: 0x88bbee, roughness: 0.02, metalness: 0.05, transparent: true, opacity: 0.32, side: T.DoubleSide })
-    const frameMat = new T.MeshStandardMaterial({ color: 0xd0d0d0, roughness: 0.5, metalness: 0.3 })
+    const WALL_THICK = 0.12
+    const SURFACE_EPS = 0.03
+    const doorMatBase = new T.MeshStandardMaterial({ color: 0xc8965a, roughness: 0.75, metalness: 0, side: T.DoubleSide })
+    const doorFrameMatBase = new T.MeshStandardMaterial({ color: 0x8a6030, roughness: 0.8, side: T.DoubleSide })
+    const glassMatBase = new T.MeshStandardMaterial({ color: 0x88bbee, roughness: 0.02, metalness: 0.05, transparent: true, opacity: 0.32, side: T.DoubleSide })
+    const frameMatBase = new T.MeshStandardMaterial({ color: 0xd0d0d0, roughness: 0.5, metalness: 0.3, side: T.DoubleSide })
     const handleMat = new T.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.2, metalness: 0.85 })
-    const curtainMat = (hexColor) => new T.MeshStandardMaterial({ color: hex2color(T, hexColor || '#fca5a5'), roughness: 0.95, side: T.DoubleSide })
+    const curtainMat = (hexColor, opacity = 1) => new T.MeshStandardMaterial({
+      color: hex2color(T, hexColor || '#fca5a5'),
+      roughness: 0.95,
+      side: T.DoubleSide,
+      transparent: opacity < 1,
+      opacity,
+    })
 
     const box3d = (w, h, d, mat) => { const m = new T.Mesh(new T.BoxGeometry(w, h, d), mat); m.castShadow = true; m.receiveShadow = true; return m }
 
+    // Apply polygon offset so overlays don't z-fight with wall surfaces.
+    ;[doorMatBase, doorFrameMatBase, glassMatBase, frameMatBase, handleMat].forEach(m => {
+      m.polygonOffset = true
+      m.polygonOffsetFactor = -2
+      m.polygonOffsetUnits = -2
+    })
+
     // Doors
     for (const d of (ovs?.doors || [])) {
+      const doorMat = doorMatBase.clone()
+      const doorFrameMat = doorFrameMatBase.clone()
+      if (d.color) doorMat.color = hex2color(T, d.color)
+      if (d.frameColor) doorFrameMat.color = hex2color(T, d.frameColor)
+
       const dW = (d.w || 80) / GRID2D
-      const dH = H * 0.9
+      // Door height is now independent from room height (clamped to fit).
+      const dH = Math.min(H - 0.1, Math.max(1.6, d.heightM != null ? +d.heightM : 2.1))
       const g = new T.Group()
 
       // Door panel (wood)
-      const panel = box3d(dW, dH, 0.05, doorMat)
+      const panel = box3d(dW, dH, WALL_THICK + SURFACE_EPS * 2, doorMat)
       panel.position.set(dW / 2, dH / 2, 0)
       g.add(panel)
 
-      // Door frame (3 sides)
-      const fT = 0.06
+      // Decorative inset panels (adds realism)
+      const insetMat = new T.MeshStandardMaterial({ color: 0xb98348, roughness: 0.78, metalness: 0.02, side: T.DoubleSide })
+      const insetDepth = WALL_THICK * 0.25
+      const insetW = dW * 0.78
+      const insetH = dH * 0.26
+      ;[-0.18, 0.18].forEach((oy) => {
+        const ip = box3d(insetW, insetH, insetDepth, insetMat)
+        ip.position.set(dW / 2, dH * (0.52 + oy), WALL_THICK * 0.15)
+        g.add(ip)
+      })
+
+      // Door frame (3 sides) - make it thicker & correctly aligned (no top gap)
+      const fT = 0.075
+      const fDepth = WALL_THICK + 0.06
       ;[
-        [dW / 2, dH + fT, -(fT / 2), dW + fT * 2, fT, fT],      // top
-        [-(fT / 2), dH / 2, 0, fT, dH, fT],                      // left
-        [dW + fT / 2, dH / 2, 0, fT, dH, fT],                    // right
+        [dW / 2, dH + fT / 2, 0, dW + fT * 2, fT, fDepth],        // top
+        [-fT / 2, dH / 2, 0, fT, dH + fT, fDepth],                // left
+        [dW + fT / 2, dH / 2, 0, fT, dH + fT, fDepth],            // right
       ].forEach(([x, y, z, w, h, de]) => {
         const fm = box3d(w, h, de, doorFrameMat)
         fm.position.set(x, y, z); g.add(fm)
@@ -883,6 +1117,9 @@ export default function Workspace3D() {
       handle.rotation.z = Math.PI / 2
       handle.position.set(dW - 0.12, dH * 0.48, 0.04)
       g.add(handle)
+      const latch = box3d(0.03, 0.015, 0.06, handleMat)
+      latch.position.set(dW - 0.1, dH * 0.48, 0.03)
+      g.add(latch)
 
       // Swing arc indicator (thin flat quarter circle at ground)
       const arcMat = new T.MeshStandardMaterial({ color: 0x999999, roughness: 1, transparent: true, opacity: 0.2, side: T.DoubleSide })
@@ -897,19 +1134,30 @@ export default function Workspace3D() {
       const z3d = (d.y - OY2D) / GRID2D
       g.position.set(x3d, 0, z3d)
       g.rotation.y = -(d.rotation || 0) * Math.PI / 180
+      // Tiny push off the wall plane to eliminate z-fighting (still visible from both sides due to thickness).
+      const off = new T.Vector3(0, 0, 0.006).applyAxisAngle(new T.Vector3(0, 1, 0), g.rotation.y)
+      g.position.add(off)
       group.add(g)
     }
 
     // Windows
     for (const w of (ovs?.windows || [])) {
+      const glassMat = glassMatBase.clone()
+      const frameMat = frameMatBase.clone()
+      if (w.glassTint) glassMat.color = hex2color(T, w.glassTint)
+      if (w.frameColor) frameMat.color = hex2color(T, w.frameColor)
+
       const wW = (w.w || 100) / GRID2D
-      const wH = H * 0.45
-      const wY = H * 0.4  // height from floor
+      // Window size/position independent from room height (clamped to fit).
+      const wH = Math.min(H - 0.2, Math.max(0.4, w.heightM != null ? +w.heightM : 1.2))
+      const wY = Math.max(0, Math.min(H - wH - 0.05, w.sillM != null ? +w.sillM : 0.9))
       const g = new T.Group()
 
       // Glass pane
-      const glass = box3d(wW, wH, 0.02, glassMat)
+      const glass = box3d(wW, wH, WALL_THICK + SURFACE_EPS * 2, glassMat)
       glass.position.set(0, wY + wH / 2, 0)
+      glass.renderOrder = 2
+      if (glass.material) glass.material.depthWrite = false
       g.add(glass)
 
       // Frame: top, bottom, left, right
@@ -920,24 +1168,37 @@ export default function Workspace3D() {
         [-(wW / 2 + fT / 2), wY + wH / 2, 0, fT, wH + fT * 2, fT],  // left
         [wW / 2 + fT / 2, wY + wH / 2, 0, fT, wH + fT * 2, fT],     // right
       ].forEach(([x, y, z, fw, fh, fd]) => {
-        const fm = box3d(fw, fh, fd, frameMat)
+        const fm = box3d(fw, fh, WALL_THICK + 0.02, frameMat)
         fm.position.set(x, y, z); g.add(fm)
       })
 
       // Center cross divider
-      const cv = box3d(0.025, wH, 0.025, frameMat); cv.position.set(0, wY + wH / 2, 0); g.add(cv)
-      const ch = box3d(wW, 0.025, 0.025, frameMat); ch.position.set(0, wY + wH / 2, 0); g.add(ch)
+      const mull = new T.MeshStandardMaterial({
+        color: frameMat.color.clone().multiplyScalar(0.92),
+        roughness: 0.45,
+        metalness: 0.25,
+        side: T.DoubleSide
+      })
+      const cv = box3d(0.03, wH, WALL_THICK + 0.02, mull); cv.position.set(0, wY + wH / 2, 0); cv.renderOrder = 1; g.add(cv)
+      const ch = box3d(wW, 0.03, WALL_THICK + 0.02, mull); ch.position.set(0, wY + wH / 2, 0); ch.renderOrder = 1; g.add(ch)
 
       // Sill ledge
-      const sill = box3d(wW + 0.12, 0.04, 0.1, new T.MeshStandardMaterial({ color: 0xe0ddd8, roughness: 0.6 }))
+      const sillMat = new T.MeshStandardMaterial({ color: frameMat.color.clone().multiplyScalar(0.82), roughness: 0.65, metalness: 0.15, side: T.DoubleSide })
+      const sill = box3d(wW + 0.12, 0.04, 0.1, sillMat)
       sill.position.set(0, wY - 0.02, 0.04)
       g.add(sill)
+      // Small side trim blocks for depth cues
+      const trim = new T.MeshStandardMaterial({ color: frameMat.color.clone().multiplyScalar(0.9), roughness: 0.6, metalness: 0.2, side: T.DoubleSide })
+      const t1 = box3d(0.035, wH + 0.06, 0.08, trim); t1.position.set(-wW / 2 - 0.035, wY + wH / 2, 0.03); g.add(t1)
+      const t2 = box3d(0.035, wH + 0.06, 0.08, trim); t2.position.set(wW / 2 + 0.035, wY + wH / 2, 0.03); g.add(t2)
 
       // Position
       const x3d = (w.x - OX2D) / GRID2D
       const z3d = (w.y - OY2D) / GRID2D
       g.position.set(x3d, 0, z3d)
       g.rotation.y = -(w.rotation || 0) * Math.PI / 180
+      const off = new T.Vector3(0, 0, 0.006).applyAxisAngle(new T.Vector3(0, 1, 0), g.rotation.y)
+      g.position.add(off)
       group.add(g)
     }
 
@@ -946,7 +1207,9 @@ export default function Workspace3D() {
       const cW = (c.w || 120) / GRID2D
       const cH = H * 0.85
       const g = new T.Group()
-      const cMat = curtainMat(c.color)
+      const style = (c.style || 'standard').toLowerCase()
+      const op = style === 'sheer' ? 0.65 : style === 'blackout' ? 1 : 0.9
+      const cMat = curtainMat(c.color, op)
 
       // Two curtain panels with drape shape using box with scale
       const panelW = cW * 0.42
@@ -977,6 +1240,8 @@ export default function Workspace3D() {
       const z3d = (c.y - OY2D) / GRID2D
       g.position.set(x3d, 0, z3d)
       g.rotation.y = -(c.rotation || 0) * Math.PI / 180
+      const off = new T.Vector3(0, 0, 0.006).applyAxisAngle(new T.Vector3(0, 1, 0), g.rotation.y)
+      g.position.add(off)
       group.add(g)
     }
   }
@@ -990,6 +1255,20 @@ export default function Workspace3D() {
     const target = new T.Vector3()
     const hit = ray.ray.intersectPlane(plane, target)
     return hit ? target : null
+  }
+
+  const ensureDragProxy = (T, fg, mesh) => {
+    // Create a lightweight proxy box for dragging heavy models.
+    const box3 = new T.Box3().setFromObject(mesh)
+    const sz = new T.Vector3(); box3.getSize(sz)
+    if (!Number.isFinite(sz.x) || !Number.isFinite(sz.z) || sz.x <= 0 || sz.z <= 0) return null
+    const geo = new T.BoxGeometry(Math.max(0.08, sz.x), 0.02, Math.max(0.08, sz.z))
+    const mat = new T.MeshStandardMaterial({ color: 0x8b5cf6, roughness: 0.9, metalness: 0, transparent: true, opacity: 0.25 })
+    const proxy = new T.Mesh(geo, mat)
+    proxy.position.set(mesh.position.x, 0.01, mesh.position.z)
+    proxy.renderOrder = 10
+    fg.add(proxy)
+    return proxy
   }
 
   const onPointerDown = useCallback(e => {
@@ -1009,7 +1288,16 @@ export default function Workspace3D() {
         setSelectedId(o.userData.itemId)
         const floorPt = raycastFloor(T, e.clientX, e.clientY)
         if (floorPt) {
-          dragFurnRef.current = { itemId: o.userData.itemId, offsetX: o.position.x - floorPt.x, offsetZ: o.position.z - floorPt.z }
+          // Use a proxy while dragging to avoid freezes with heavy meshes.
+          const proxy = ensureDragProxy(T, fg, o) || null
+          o.visible = false
+          dragFurnRef.current = {
+            itemId: o.userData.itemId,
+            mesh: o,
+            proxy,
+            offsetX: o.position.x - floorPt.x,
+            offsetZ: o.position.z - floorPt.z,
+          }
         }
       }
     } else {
@@ -1023,22 +1311,27 @@ export default function Workspace3D() {
     p.moved = true; p.x = e.clientX; p.y = e.clientY
 
     if (dragFurnRef.current) {
+      // Throttle heavy raycasts & updates to one per animation frame.
       const T = TRef.current; if (!T) return
-      const floorPt = raycastFloor(T, e.clientX, e.clientY)
-      if (floorPt) {
-        const { itemId, offsetX, offsetZ } = dragFurnRef.current
-        const newX3d = floorPt.x + offsetX
-        const newZ3d = floorPt.z + offsetZ
-        // Move the mesh visually immediately (no setState = no lag)
-        const fg = fGroupRef.current
-        if (fg) {
-          const mesh = fg.children.find(c => c.userData?.itemId === itemId)
-          if (mesh) { mesh.position.x = newX3d; mesh.position.z = newZ3d }
-        }
-        // Buffer pending position — will commit on pointerUp
-        dragFurnRef.current.pendingX3d = newX3d
-        dragFurnRef.current.pendingZ3d = newZ3d
-        dragFurnRef.current.hasPending = true
+      dragFurnRef.current.lastClientX = e.clientX
+      dragFurnRef.current.lastClientY = e.clientY
+      if (!dragRafRef.current) {
+        dragRafRef.current = requestAnimationFrame(() => {
+          dragRafRef.current = null
+          const d = dragFurnRef.current
+          if (!d) return
+          const floorPt = raycastFloor(T, d.lastClientX, d.lastClientY)
+          if (!floorPt) return
+          const newX3d = floorPt.x + d.offsetX
+          const newZ3d = floorPt.z + d.offsetZ
+          if (d.proxy) {
+            d.proxy.position.x = newX3d
+            d.proxy.position.z = newZ3d
+          }
+          d.pendingX3d = newX3d
+          d.pendingZ3d = newZ3d
+          d.hasPending = true
+        })
       }
       return
     }
@@ -1074,6 +1367,16 @@ export default function Workspace3D() {
         })
         setDirty(true)
       }
+      // Restore real mesh, remove proxy
+      const d = dragFurnRef.current
+      try {
+        if (d?.mesh) d.mesh.visible = true
+        if (d?.proxy && d?.proxy.parent) {
+          d.proxy.parent.remove(d.proxy)
+          d.proxy.geometry?.dispose?.()
+          d.proxy.material?.dispose?.()
+        }
+      } catch {}
       dragFurnRef.current = null
     }
     p.down = false
@@ -1115,10 +1418,11 @@ export default function Workspace3D() {
   const save = async () => {
     setSaving(true)
     try {
-      await projectsApi.update(id, { roomConfig: JSON.stringify(cfg), furnitureLayout: JSON.stringify({ items, overlays }) })
+      await projectsApi.update(id, { roomConfig: JSON.stringify(cfg), furnitureLayout: JSON.stringify({ items, overlays, customModels }) })
       designStore.setItems(items)
       designStore.setOverlays(overlays)
       designStore.setCfg(cfg)
+      designStore.setCustomModels(customModels)
       setDirty(false); toast.success('Saved!')
     }
     catch { toast.error('Save failed') } finally { setSaving(false) }
@@ -1131,12 +1435,12 @@ export default function Workspace3D() {
     clearTimeout(autoSaveTimer.current)
     autoSaveTimer.current = setTimeout(async () => {
       try {
-        await projectsApi.update(id, { roomConfig: JSON.stringify(cfg), furnitureLayout: JSON.stringify({ items, overlays }) })
+        await projectsApi.update(id, { roomConfig: JSON.stringify(cfg), furnitureLayout: JSON.stringify({ items, overlays, customModels }) })
         setDirty(false)
       } catch (e) { console.warn('Auto-save failed', e) }
     }, 1500)
     return () => clearTimeout(autoSaveTimer.current)
-  }, [dirty, items, overlays, cfg, id]) // eslint-disable-line
+  }, [dirty, items, overlays, customModels, cfg, id]) // eslint-disable-line
 
   const selectedItem = items.find(i => i.id === selectedId)
 
@@ -1154,7 +1458,39 @@ export default function Workspace3D() {
           <ChevronLeft className="w-4 h-4" /><span className="hidden sm:inline">2D Edit</span>
         </button>
         <div className="h-5 w-px bg-white/10 flex-shrink-0" />
-        <span className="font-semibold text-white text-sm truncate max-w-[120px] flex-shrink-0">{project?.name || '…'}</span>
+        {isEditingName ? (
+          <input
+            autoFocus
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onBlur={async () => {
+              setIsEditingName(false)
+              const next = nameDraft.trim() || 'Untitled'
+              setProject((p) => p ? { ...p, name: next } : p)
+              try {
+                await projectsApi.update(id, {
+                  name: next,
+                  roomConfig: JSON.stringify(cfg),
+                  furnitureLayout: JSON.stringify({ items, overlays, customModels }),
+                })
+                setProject((p) => p ? { ...p, name: next } : p)
+              } catch (err) {
+                toast.error('Failed to rename project')
+              }
+            }}
+            onKeyDown={async (e) => {
+              if (e.key === 'Enter') e.currentTarget.blur()
+              if (e.key === 'Escape') setIsEditingName(false)
+            }}
+            className="w-40 bg-slate-900/10 border border-slate-300 rounded px-2 py-1 text-xs text-white"
+          />
+        ) : (
+          <span
+            className="font-semibold text-white text-sm truncate max-w-[120px] flex-shrink-0 cursor-pointer hover:text-purple-200"
+            onClick={() => { setNameDraft(project?.name || ''); setIsEditingName(true) }}
+            title="Click to rename"
+          >{project?.name || 'Untitled'}</span>
+        )}
         <span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 font-semibold border border-purple-500/30 flex-shrink-0">3D</span>
         {dirty && <span className="text-xs text-amber-400 flex-shrink-0">● Unsaved</span>}
         <div className="flex-1" />

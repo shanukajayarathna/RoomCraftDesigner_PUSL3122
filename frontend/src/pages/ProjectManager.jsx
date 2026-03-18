@@ -163,15 +163,21 @@ function ProjectCard({ project, onDelete, onRenameStart }) {
     <div className="card overflow-hidden group hover:shadow-md transition-all duration-200">
       {/* Thumbnail */}
       <div className="h-36 relative cursor-pointer"
-        style={{ background:`linear-gradient(135deg,${config.wallColor||'#F5F5F0'}ee,${config.wallColor||'#E8E4DC'}99)` }}
+        style={{
+          background: project.thumbnailUrl
+            ? `url(${project.thumbnailUrl}) center/cover no-repeat`
+            : `linear-gradient(135deg,${config.wallColor||'#F5F5F0'}ee,${config.wallColor||'#E8E4DC'}99)`
+        }}
         onClick={() => navigate(`/workspace/2d/${project.id}`)}>
-        <div className="absolute inset-0 grid-bg opacity-20" />
-        <svg className="absolute inset-0 w-full h-full opacity-15" viewBox="0 0 200 144">
-          {config.shape==='l-shape'
-            ? <polygon points="20,20 120,20 120,80 100,80 100,124 20,124" fill="currentColor" className="text-surface-800" />
-            : <rect x="20" y="20" width={config.shape==='square'?100:160} height="104" fill="currentColor" className="text-surface-800" rx="4"/>
-          }
-        </svg>
+        {!project.thumbnailUrl && <>
+          <div className="absolute inset-0 grid-bg opacity-20" />
+          <svg className="absolute inset-0 w-full h-full opacity-15" viewBox="0 0 200 144">
+            {config.shape==='l-shape'
+              ? <polygon points="20,20 120,20 120,80 100,80 100,124 20,124" fill="currentColor" className="text-surface-800" />
+              : <rect x="20" y="20" width={config.shape==='square'?100:160} height="104" fill="currentColor" className="text-surface-800" rx="4"/>
+            }
+          </svg>
+        </>}
         <div className="absolute bottom-2 left-2 flex gap-1.5">
           <span className="bg-white/90 text-surface-700 text-xs px-2 py-0.5 rounded-full font-medium">
             {config.width||5}m × {config.depth||4}m

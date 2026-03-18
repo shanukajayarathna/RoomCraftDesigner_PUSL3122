@@ -1,6 +1,7 @@
 package com.roomcraft.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.*;
 import org.springframework.data.annotation.CreatedDate;
@@ -30,6 +31,7 @@ public class FurnitureModel {
     private String subcategory;
     private String modelUrl;
     private String thumbnailUrl;
+    private String topViewUrl;
 
     private Double width;
     private Double height;
@@ -40,6 +42,13 @@ public class FurnitureModel {
     @Builder.Default
     private boolean active = true;
 
+    @Enumerated(EnumType.STRING)
+    // Nullable to keep H2 schema migrations safe; application defaults to PUBLIC.
+    @Column(nullable = true, length = 16)
+    @Builder.Default
+    private Visibility visibility = Visibility.PUBLIC;
+
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "uploaded_by")
     @ToString.Exclude
@@ -49,4 +58,8 @@ public class FurnitureModel {
 
     @CreatedDate
     private LocalDateTime createdAt;
+
+    public enum Visibility {
+        PUBLIC, PRIVATE
+    }
 }
