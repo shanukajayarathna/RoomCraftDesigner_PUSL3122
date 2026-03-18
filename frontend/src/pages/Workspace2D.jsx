@@ -6,14 +6,14 @@ import { projectsApi, furnitureApi, FURNITURE_LIBRARY, useDesignStore } from '..
 import toast from 'react-hot-toast'
 import { renderTopViewPreview } from '../utils/topViewPreview'
 import {
-  Save, Undo, RotateCw, Trash2, Box,
+  Save, Undo, Redo, RotateCw, Trash2, Box,
   ZoomIn, ZoomOut, MousePointer, ChevronLeft,
   Move, Maximize2, Copy, DoorOpen, Columns,
   Wind, Upload, Package, X, Palette,
   ChevronRight, ChevronDown, ChevronUp
 } from 'lucide-react'
 
-/* ── Constants ── */
+
 const GRID = 50
 const SNAP = 5
 const OX   = 80
@@ -42,7 +42,7 @@ const COLOR_PRESETS = [
 const snapV = v => Math.round(v / SNAP) * SNAP
 const normalRot = v => ((+v % 360) + 360) % 360
 
-/* ── Synchronous base64 (reliable, no FileReader race conditions) ── */
+
 function arrayBufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer)
   let binary = ''
@@ -61,27 +61,39 @@ function base64ToArrayBuffer(b64) {
   return buf
 }
 
-/* ── OBJ top-down parser ── */
 function parseOBJTopDown(text) {
+
+  if (!text || text.length > 2_000_000) return null
+
   const verts = [], faces = []
-  for (const raw of text.split('\n')) {
+  const maxVerts = 1000 
+  const maxFaces = 500  
+
+  let idx = 0
+  while (idx < text.length && (verts.length < maxVerts || faces.length < maxFaces)) {
+    const next = text.indexOf('\n', idx)
+    const raw = text.substring(idx, next === -1 ? text.length : next)
+    idx = next === -1 ? text.length : next + 1
+
     const p = raw.trim().split(/\s+/)
-    if (p[0] === 'v' && p.length >= 4) {
+    if (p[0] === 'v' && p.length >= 4 && verts.length < maxVerts) {
       const x = parseFloat(p[1]), y = parseFloat(p[2]), z = parseFloat(p[3])
       if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z))
         verts.push([x, y, z])
     }
-    if (p[0] === 'f' && p.length >= 4) {
+    if (p[0] === 'f' && p.length >= 4 && faces.length < maxFaces) {
       const ids = p.slice(1).map(s => {
         const n = parseInt(s.split('/')[0], 10)
         return Number.isFinite(n) ? n - 1 : -1
       })
-      for (let i = 1; i < ids.length - 1; i++) {
+      for (let i = 1; i < ids.length - 1 && faces.length < maxFaces; i++) {
         if (ids[0] >= 0 && ids[i] >= 0 && ids[i+1] >= 0)
           faces.push([ids[0], ids[i], ids[i+1]])
       }
     }
   }
+
+  if (!verts.length || !faces.length) return null
   return { pts2d: verts.map(([x,,z]) => [x, z]), faces }
 }
 
@@ -103,24 +115,28 @@ function parseGLBTopDown(buffer) {
     }
     if (!binChunk) return null
     const pts2d = [], faces = []
+    const maxVerts = 1000 
+    const maxFaces = 500  
     let vertexStart = 0
     for (const mesh of (gltf.meshes || [])) {
+      if (pts2d.length >= maxVerts && faces.length >= maxFaces) break
       for (const prim of (mesh.primitives || [])) {
+        if (pts2d.length >= maxVerts && faces.length >= maxFaces) break
         const at = prim.attributes || {}
         if (at.POSITION == null) continue
         const acc = gltf.accessors[at.POSITION], bv = gltf.bufferViews[acc.bufferView]
         const byteOffset = (bv.byteOffset || 0) + (acc.byteOffset || 0)
-        const count = acc.count || 0
+        const count = Math.min(acc.count || 0, maxVerts - pts2d.length)
         const pos = new Float32Array(binChunk, byteOffset, count * 3)
         for (let i = 0; i < count; i++) pts2d.push([pos[i*3], pos[i*3+2]])
-        if (prim.indices != null) {
+        if (prim.indices != null && faces.length < maxFaces) {
           const iacc = gltf.accessors[prim.indices], ibv = gltf.bufferViews[iacc.bufferView]
           const ioff  = (ibv.byteOffset || 0) + (iacc.byteOffset || 0)
           const icount = iacc.count || 0
           const idx = iacc.componentType === 5125
             ? new Uint32Array(binChunk, ioff, icount)
             : new Uint16Array(binChunk, ioff, icount)
-          for (let i = 0; i + 2 < idx.length; i += 3)
+          for (let i = 0; i + 2 < idx.length && faces.length < maxFaces; i += 3)
             faces.push([vertexStart+idx[i], vertexStart+idx[i+1], vertexStart+idx[i+2]])
         }
         vertexStart += count
@@ -133,7 +149,7 @@ function parseGLBTopDown(buffer) {
   }
 }
 
-/* ── Draw helpers ── */
+
 function drawModelTopDown(ctx, item, tdData, opts = {}) {
   if (!tdData?.pts2d?.length) return
   const {
@@ -141,8 +157,27 @@ function drawModelTopDown(ctx, item, tdData, opts = {}) {
     strokeStyle = 'rgba(139,92,246,0.75)',
     lineWidth = 0.9,
     rotationDeg,
+    isDragging = false,
   } = opts
   const { pts2d, faces } = tdData
+
+ 
+  if (isDragging && pts2d.length > 50) {
+    const hw = item.w / 2, hd = item.d / 2
+    ctx.save()
+    ctx.fillStyle = fillStyle
+    ctx.strokeStyle = strokeStyle
+    ctx.lineWidth = lineWidth
+    ctx.fillRect(-hw, -hd, item.w, item.d)
+    ctx.strokeRect(-hw, -hd, item.w, item.d)
+    ctx.restore()
+    return
+  }
+
+  // Limit faces for performance - don't draw more than 200 faces
+  const maxFaces = 200
+  const limitedFaces = faces?.slice(0, maxFaces) || []
+
   // If the caller already rotated the canvas context, pass rotationDeg: 0 to avoid double rotation.
   const angle  = (rotationDeg != null ? rotationDeg : (item.rotation || 0)) * Math.PI / 180
   const cosA = Math.cos(angle), sinA = Math.sin(angle)
@@ -159,8 +194,8 @@ function drawModelTopDown(ctx, item, tdData, opts = {}) {
   ctx.strokeStyle = strokeStyle
   ctx.fillStyle = fillStyle
   ctx.lineWidth = lineWidth
-  if (faces?.length) {
-    for (const [i0,i1,i2] of faces) {
+  if (limitedFaces.length) {
+    for (const [i0,i1,i2] of limitedFaces) {
       const p0=rotated[i0], p1=rotated[i1], p2=rotated[i2]; if (!p0||!p1||!p2) continue
       ctx.beginPath()
       ctx.moveTo((p0[0]-minX)*sx-hw, (p0[1]-minZ)*sz-hd)
@@ -560,7 +595,7 @@ function drawTopPreviewImage(ctx, url, item, imgCache) {
 }
 
 function draw(canvas, state) {
-  const { cfg, items, overlays, selected, selectedOverlay, zoom, panX, panY, topDownCache, imgCache, modelThumbById } = state
+  const { cfg, items, overlays, selected, selectedOverlay, zoom, panX, panY, topDownCache, imgCache, modelThumbById, isDragging } = state
   const ctx = canvas.getContext('2d')
   const dpr = window.devicePixelRatio || 1
   ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width,canvas.height); ctx.restore()
@@ -684,6 +719,7 @@ function draw(canvas, state) {
         strokeStyle: sel ? '#3b82f6' : (drewImg ? 'rgba(0,0,0,0.18)' : (base + 'aa')),
         lineWidth: sel ? 2.5 : (drewImg ? 1.2 : 1.6),
         rotationDeg: 0,
+        isDragging: isDragging,
       })
     } else {
       ctx.fillStyle = base
@@ -792,17 +828,19 @@ export default function Workspace2D() {
   const [imgCacheTick, setImgCacheTick] = useState(0) // trigger redraw when images load
   const previewJobsRef = useRef(new Map()) // modelId -> boolean (in-flight)
   const [modelsExpanded,setModelsExpanded]= useState(true)
-  const [catScroll,     setCatScroll]     = useState(0) // eslint-disable-line
+  const [catScroll,     setCatScroll]     = useState(0) 
+  const isDragging = useRef(false) // eslint-disable-line
 
   const stateRef = useRef({})
   // Build a quick lookup: backend modelId -> topViewUrl/thumbnailUrl
   const modelThumbById = useRef({})
-  stateRef.current = { cfg, items, overlays, selectedOverlay, selected, zoom, panX, panY, topDownCache, customModels, imgCache: imgCacheRef.current, modelThumbById: modelThumbById.current }
+  stateRef.current = { cfg, items, overlays, selectedOverlay, selected, zoom, panX, panY, topDownCache, customModels, imgCache: imgCacheRef.current, modelThumbById: modelThumbById.current, isDragging: isDragging.current }
   const zoomRef = useRef(zoom); useEffect(()=>{ zoomRef.current=zoom },[zoom])
   const panRef  = useRef({x:panX,y:panY}); useEffect(()=>{ panRef.current={x:panX,y:panY} },[panX,panY])
   const drag    = useRef(null)
   const history = useRef([])
-  const isDragging = useRef(false)  // ← prevents store sync during drag frames
+  const redoStack = useRef([])
+ // ← prevents store sync during drag frames
 
   // ── Sync items/overlays/cfg TO shared store whenever they change ──
   // Guard: skip sync while dragging to avoid lag (sync happens on mouseUp instead)
@@ -872,6 +910,9 @@ export default function Workspace2D() {
       setCustomModels(cms)
       // ← Push initial data into shared store so 3D can pick it up immediately
       designStore.loadProject(id, its, ov, c, cms)
+      // Initialize history with loaded state
+      history.current = [JSON.stringify({items: its, overlays: ov})]
+      redoStack.current = []
       setPendingFit(true)
     }).catch(()=>{toast.error('Failed to load project');navigate('/projects')}).finally(()=>setLoading(false))
     furnitureApi.getAll().then(d=>{
@@ -1029,11 +1070,13 @@ export default function Workspace2D() {
   const onMouseUp=useCallback(()=>{
     if(drag.current?.hasPending){
       if(['move','rotate','resize'].includes(drag.current.type)){
+        pushHistory(); // Save state before applying drag changes
         const next=stateRef.current.items
         setItems(next)
         designStore.setItems(next)
       }
       if(drag.current?.type==='overlay-move'){
+        pushHistory(); // Save state before applying overlay drag changes
         const next=stateRef.current.overlays
         setOverlays(next)
         designStore.setOverlays(next)
@@ -1086,20 +1129,45 @@ export default function Workspace2D() {
     setItems(prev=>[...prev,newItem]); setSelected(newItem.id); setSelectedOverlay(null); setDirty(true)
   },[])
 
-  const pushHistory=()=>{ history.current.push(JSON.stringify(stateRef.current.items)); if(history.current.length>80) history.current.shift() }
-  const undo=useCallback(()=>{ if(!history.current.length){toast('Nothing to undo');return}; setItems(JSON.parse(history.current.pop())); setSelected(null); setDirty(true) },[])
+  const pushHistory=()=>{ 
+    history.current.push(JSON.stringify({items: stateRef.current.items, overlays: stateRef.current.overlays})); 
+    if(history.current.length>80) history.current.shift();
+    redoStack.current = []; // Clear redo stack when new changes are made
+  }
+  const undo=useCallback(()=>{ 
+    if(!history.current.length){toast('Nothing to undo');return}; 
+    redoStack.current.push(JSON.stringify({items: stateRef.current.items, overlays: stateRef.current.overlays})); // Save current state for redo
+    const prevState = JSON.parse(history.current.pop());
+    setItems(prevState.items); 
+    setOverlays(prevState.overlays);
+    setSelected(null); 
+    setSelectedOverlay(null);
+    setDirty(true) 
+  },[])
+  const redo=useCallback(()=>{ 
+    if(!redoStack.current.length){toast('Nothing to redo');return}; 
+    history.current.push(JSON.stringify({items: stateRef.current.items, overlays: stateRef.current.overlays})); // Save current state for undo
+    const nextState = JSON.parse(redoStack.current.pop());
+    setItems(nextState.items); 
+    setOverlays(nextState.overlays);
+    setSelected(null); 
+    setSelectedOverlay(null);
+    setDirty(true) 
+  },[])
   const rot90=useCallback(()=>{ const s=stateRef.current.selected; if(!s) return; pushHistory(); setItems(p=>p.map(i=>i.id===s?{...i,rotation:((i.rotation||0)+90)%360}:i)); setDirty(true) },[])
   const del=useCallback(()=>{ const s=stateRef.current.selected; if(!s) return; pushHistory(); setItems(p=>p.filter(i=>i.id!==s)); setSelected(null); setDirty(true) },[])
   const dup=useCallback(()=>{ const s=stateRef.current.selected; if(!s) return; pushHistory(); const src=stateRef.current.items.find(i=>i.id===s); if(!src) return; const ni={...src,id:Date.now(),x:src.x+25,y:src.y+25}; setItems(p=>[...p,ni]); setSelected(ni.id); setDirty(true) },[])
 
   const delOverlay=useCallback(()=>{
     const ov=stateRef.current.selectedOverlay; if(!ov) return
+    pushHistory();
     const key=ov.type==='door'?'doors':ov.type==='window'?'windows':'curtains'
     setOverlays(o=>({...o,[key]:o[key].filter(x=>x.id!==ov.id)}))
     setSelectedOverlay(null); setDirty(true)
   },[])
 
   const updateOverlay=useCallback((type,ovId,field,value)=>{
+    pushHistory();
     const key=type==='door'?'doors':type==='window'?'windows':'curtains'
     setOverlays(o=>({...o,[key]:o[key].map(x=>x.id===ovId?{...x,[field]:value}:x)}))
     setDirty(true)
@@ -1112,17 +1180,19 @@ export default function Workspace2D() {
       if(e.key==='r'||e.key==='R') rot90()
       if(e.key==='d'||e.key==='D') dup()
       if((e.ctrlKey||e.metaKey)&&e.key==='z'){e.preventDefault();undo()}
+      if((e.ctrlKey||e.metaKey)&&e.key==='y'){e.preventDefault();redo()}
+      if((e.ctrlKey||e.metaKey)&&e.shiftKey&&e.key==='Z'){e.preventDefault();redo()}
       if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();save()}
       if(e.key==='Escape'){setSelected(null);setSelectedOverlay(null)}
       if(e.key===' '){e.preventDefault();setMode(m=>m==='pan'?'select':'pan')}
       if(e.key==='f'||e.key==='F') centerView()
     }
     window.addEventListener('keydown',h); return()=>window.removeEventListener('keydown',h)
-  },[del,rot90,dup,undo,centerView]) // eslint-disable-line
+  },[del,rot90,dup,undo,redo,centerView]) // eslint-disable-line
 
-  const addWindow=()=>{ setOverlays(o=>({...o,windows:[...o.windows,{id:Date.now(),x:OX+(stateRef.current.cfg.width||5)*GRID/2,y:OY,rotation:0,w:100,frameColor:'#d0d0d0',glassTint:'#88bbee',style:'cross',heightM:1.2,sillM:0.9}]})); setDirty(true); toast('Window added') }
-  const addCurtain=()=>{ setOverlays(o=>({...o,curtains:[...o.curtains,{id:Date.now(),x:OX+(stateRef.current.cfg.width||5)*GRID/2,y:OY+8,rotation:0,w:120,color:curtainColor,style:'standard'}]})); setDirty(true); toast('Curtain added') }
-  const addDoor=()=>{ setOverlays(o=>({...o,doors:[...o.doors,{id:Date.now(),x:OX+10,y:OY,rotation:0,w:80,color:'#c8965a',frameColor:'#8a6030',style:'single',heightM:2.1}]})); setDirty(true); toast('Door added') }
+  const addWindow=()=>{ pushHistory(); setOverlays(o=>({...o,windows:[...o.windows,{id:Date.now(),x:OX+(stateRef.current.cfg.width||5)*GRID/2,y:OY,rotation:0,w:100,frameColor:'#d0d0d0',glassTint:'#88bbee',style:'cross',heightM:1.2,sillM:0.9}]})); setDirty(true); toast('Window added') }
+  const addCurtain=()=>{ pushHistory(); setOverlays(o=>({...o,curtains:[...o.curtains,{id:Date.now(),x:OX+(stateRef.current.cfg.width||5)*GRID/2,y:OY+8,rotation:0,w:120,color:curtainColor,style:'standard'}]})); setDirty(true); toast('Curtain added') }
+  const addDoor=()=>{ pushHistory(); setOverlays(o=>({...o,doors:[...o.doors,{id:Date.now(),x:OX+10,y:OY,rotation:0,w:80,color:'#c8965a',frameColor:'#8a6030',style:'single',heightM:2.1}]})); setDirty(true); toast('Door added') }
 
   /* ── Model upload (fixed: synchronous base64 + ref-based file trigger) ── */
   const handleModelUpload=useCallback(async e=>{
@@ -1151,6 +1221,12 @@ export default function Workspace2D() {
           if(ext==='obj'){
             const text=new TextDecoder().decode(buf)
             tdData=parseOBJTopDown(text)
+            // Check if model was truncated for performance
+            const vertexCount = (text.match(/\nv /g) || []).length
+            const faceCount = (text.match(/\nf /g) || []).length
+            if (vertexCount > 1000 || faceCount > 500) {
+              toast(`Model simplified for performance (${vertexCount}→${tdData.pts2d.length} vertices, ${faceCount}→${tdData.faces.length} faces)`)
+            }
           } else if(ext==='glb'){
             tdData=parseGLBTopDown(buf)
           }
@@ -1189,6 +1265,7 @@ export default function Workspace2D() {
   },[]) // reads via stateRef
 
   const removeCustomModel=useCallback(modelId=>{
+    pushHistory(); // Save state before removing items
     setCustomModels(prev=>prev.filter(m=>m.id!==modelId))
     setTopDownCache(prev=>{ const n={...prev}; delete n[modelId]; return n })
     setItems(prev=>prev.filter(i=>i.customModelId!==modelId))
@@ -1337,6 +1414,7 @@ export default function Workspace2D() {
         <button onClick={dup} disabled={!selected} title="Duplicate" className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-30 flex-shrink-0"><Copy className="w-4 h-4"/></button>
         <button onClick={del} disabled={!selected} title="Delete" className="p-1.5 rounded-lg text-red-400 hover:bg-red-50 disabled:opacity-30 flex-shrink-0"><Trash2 className="w-4 h-4"/></button>
         <button onClick={undo} title="Undo (Ctrl+Z)" className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 flex-shrink-0"><Undo className="w-4 h-4"/></button>
+        <button onClick={redo} title="Redo (Ctrl+Y / Ctrl+Shift+Z)" className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 flex-shrink-0"><Redo className="w-4 h-4"/></button>
 
         <div className="h-5 w-px bg-slate-200 flex-shrink-0"/>
 
@@ -1462,7 +1540,7 @@ export default function Workspace2D() {
                       <span className="font-medium">{title.slice(0,-1)} {i+1}</span>
                       <div className="flex items-center gap-1">
                         <span className="text-slate-400 text-xs">{item.w||80}px</span>
-                        <button onClick={ev=>{ev.stopPropagation();setOverlays(o=>({...o,[key]:o[key].filter(x=>x.id!==item.id)}));setDirty(true)}} className="p-0.5 rounded text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"><X className="w-3 h-3"/></button>
+                        <button onClick={ev=>{ev.stopPropagation();pushHistory();setOverlays(o=>({...o,[key]:o[key].filter(x=>x.id!==item.id)}));setDirty(true)}} className="p-0.5 rounded text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"><X className="w-3 h-3"/></button>
                       </div>
                     </div>
                   ))}
@@ -1566,14 +1644,14 @@ export default function Workspace2D() {
                       <label className="text-xs text-slate-400 block mb-1">{l} (m)</label>
                       <input type="number" min="0.2" max="12" step="0.1" className="w-full text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300 text-center font-mono"
                         value={(selectedItem[k]/GRID).toFixed(2)}
-                        onChange={e=>{const v=Math.max(10,Math.round(+e.target.value*GRID));setItems(p=>p.map(i=>i.id===selected?{...i,[k]:v,[mk]:+e.target.value}:i));setDirty(true)}}/>
+                        onChange={e=>{pushHistory(); const v=Math.max(10,Math.round(+e.target.value*GRID));setItems(p=>p.map(i=>i.id===selected?{...i,[k]:v,[mk]:+e.target.value}:i));setDirty(true)}}/>
                     </div>
                   ))}
                   <div>
                     <label className="text-xs text-slate-400 block mb-1">H (m)</label>
                     <input type="number" min="0.1" max="3" step="0.05" className="w-full text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300 text-center font-mono"
                       value={(selectedItem.heightM||0.8).toFixed(2)}
-                      onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,heightM:+e.target.value}:i));setDirty(true)}}/>
+                      onChange={e=>{pushHistory(); setItems(p=>p.map(i=>i.id===selected?{...i,heightM:+e.target.value}:i));setDirty(true)}}/>
                   </div>
                 </div>
               </div>
@@ -1586,7 +1664,7 @@ export default function Workspace2D() {
                     <input type="number" min="0" max="359" step="1"
                       className="w-full text-sm font-mono border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-300 text-center"
                       value={selectedItem.rotation||0}
-                      onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,rotation:normalRot(e.target.value)}:i));setDirty(true)}}/>
+                      onChange={e=>{pushHistory(); setItems(p=>p.map(i=>i.id===selected?{...i,rotation:normalRot(e.target.value)}:i));setDirty(true)}}/>
                     <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 pointer-events-none">°</span>
                   </div>
                   <button onClick={rot90} className="flex items-center gap-1 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-all flex-shrink-0">
@@ -1595,7 +1673,7 @@ export default function Workspace2D() {
                 </div>
                 <input type="range" min="0" max="359" step="1" className="w-full accent-blue-500"
                   value={selectedItem.rotation||0}
-                  onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,rotation:+e.target.value}:i));setDirty(true)}}/>
+                  onChange={e=>{pushHistory(); setItems(p=>p.map(i=>i.id===selected?{...i,rotation:+e.target.value}:i));setDirty(true)}}/>
                 <div className="flex justify-between text-xs text-slate-300 mt-0.5">
                   <span>0°</span><span>90°</span><span>180°</span><span>270°</span><span>359°</span>
                 </div>
@@ -1607,15 +1685,15 @@ export default function Workspace2D() {
                 <div className="flex items-center gap-2.5 mb-3">
                   <input type="color" className="w-10 h-10 rounded-xl border-2 border-slate-200 cursor-pointer p-0.5 flex-shrink-0"
                     value={selectedItem.color||'#93b4fd'}
-                    onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,color:e.target.value}:i));setDirty(true)}}/>
+                    onChange={e=>{pushHistory(); setItems(p=>p.map(i=>i.id===selected?{...i,color:e.target.value}:i));setDirty(true)}}/>
                   <input className="flex-1 text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-slate-50 font-mono uppercase focus:outline-none focus:ring-1 focus:ring-blue-300"
                     value={selectedItem.color||'#93b4fd'}
-                    onChange={e=>{setItems(p=>p.map(i=>i.id===selected?{...i,color:e.target.value}:i));setDirty(true)}}/>
+                    onChange={e=>{pushHistory(); setItems(p=>p.map(i=>i.id===selected?{...i,color:e.target.value}:i));setDirty(true)}}/>
                 </div>
                 {/* Color presets */}
                 <div className="flex flex-wrap gap-1.5">
                   {COLOR_PRESETS.map(c=>(
-                    <button key={c} onClick={()=>{setItems(p=>p.map(i=>i.id===selected?{...i,color:c}:i));setDirty(true)}}
+                    <button key={c} onClick={()=>{pushHistory(); setItems(p=>p.map(i=>i.id===selected?{...i,color:c}:i));setDirty(true)}}
                       className={`w-7 h-7 rounded-full border-2 transition-all hover:scale-110 ${selectedItem.color===c?'border-blue-500 scale-110':'border-white shadow-sm'}`}
                       style={{background:c}} title={c}/>
                   ))}
