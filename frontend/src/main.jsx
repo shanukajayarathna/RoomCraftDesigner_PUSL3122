@@ -47,7 +47,7 @@ class ErrorBoundary extends React.Component {
 // ─── Route guards ─────────────────────────────────────────────────────────────
 function PrivateRoute({ children, adminOnly = false }) {
   const { user } = useAuthStore()
-  if (!user) return <Navigate to="/login" replace />
+  if (!user) return <Navigate to="/" replace />
   if (adminOnly && user.role !== 'ADMIN') return <Navigate to="/dashboard" replace />
   return children
 }
@@ -59,16 +59,12 @@ function PublicOnlyRoute({ children }) {
 }
 
 function AuthInitializer() {
-  const { token, setUser, logout } = useAuthStore()
+  const { logout } = useAuthStore()
   React.useEffect(() => {
-    if (!token) return
-    userApi.getProfile().then((profile) => {
-      setUser(profile)
-      localStorage.setItem('rc_user', JSON.stringify(profile))
-    }).catch(() => {
-      logout()
-    })
-  }, [token, setUser, logout])
+    logout()
+    localStorage.removeItem('rc_token')
+    localStorage.removeItem('rc_user')
+  }, [logout])
   return null
 }
 

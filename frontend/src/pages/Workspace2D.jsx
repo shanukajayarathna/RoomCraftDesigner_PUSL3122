@@ -1382,6 +1382,7 @@ export default function Workspace2D() {
   const [cfg,           setCfg]           = useState({ shape:'rectangle', width:5, depth:4, height:2.8, wallColor:'#F5F5F0', floorTexture:'wood' })
   const [items,         setItems]         = useState([])
   const [overlays,      setOverlays]      = useState({ doors:[], windows:[], curtains:[] })
+  const [viewOptions,   setViewOptions]   = useState({})
   const [selected,      setSelected]      = useState(null)
   const [selectedOverlay, setSelectedOverlay] = useState(null)
   const [dirty,         setDirty]         = useState(false)
@@ -1477,9 +1478,27 @@ export default function Workspace2D() {
           its=Array.isArray(saved.items)?saved.items:[]
           ov=saved.overlays||ov
           cms=Array.isArray(saved.customModels)?saved.customModels:[]
+          setViewOptions(saved.viewOptions || {})
         }
         else if(Array.isArray(saved)) its=saved
       }catch{}
+
+      // Fallback to local browser autosave if server data fails or is empty
+      if((its.length===0 && (!ov.doors.length && !ov.windows.length && !ov.curtains.length)) || !p.furnitureLayout){
+        try {
+          const local = localStorage.getItem(`rc_last_work_${id}`)
+          if(local){
+            const backup = JSON.parse(local)
+            if(Array.isArray(backup.items) && backup.items.length){
+              its = backup.items
+              ov = backup.overlays || ov
+              cms = backup.customModels || cms
+              if (backup.viewOptions) setViewOptions(backup.viewOptions)
+            }
+          }
+        } catch {}
+      }
+
       setItems(its)
       setOverlays(ov)
       setCustomModels(cms)
@@ -1499,6 +1518,22 @@ export default function Workspace2D() {
   }
 }).catch(()=>{})
   },[id]) // eslint-disable-line
+
+  // Save design progress in browser local storage so restart keeps last design (fallback when server is unavailable)
+  useEffect(() => {
+    try {
+      localStorage.setItem(`rc_last_work_${id}`, JSON.stringify({
+        items,
+        overlays,
+        customModels,
+        roomConfig: cfg,
+        viewOptions,
+        savedAt: Date.now(),
+      }))
+    } catch (e) {
+      console.warn('Failed to save local backup', e)
+    }
+  }, [id, items, overlays, customModels, cfg])
 
   // Rebuild top-down cache from persisted custom model data (so silhouettes stay identical after 3D round-trips)
   useEffect(() => {
@@ -1848,7 +1883,7 @@ export default function Workspace2D() {
   const save=async()=>{
     setSaving(true)
     try{
-      await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays,customModels})})
+      await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays,customModels,viewOptions})})
       setDirty(false)
       toast.success('Saved!')
       ;(async () => {
@@ -1867,6 +1902,18 @@ export default function Workspace2D() {
     }
     catch{toast.error('Save failed')}finally{setSaving(false)}
   }
+
+  useEffect(() => {
+    const handler = async () => {
+      try {
+        await save()
+      } catch (e) {
+        console.warn('Event save failed', e)
+      }
+    }
+    window.addEventListener('roomcraft-save-request', handler)
+    return () => window.removeEventListener('roomcraft-save-request', handler)
+  }, [save])
 
   const exportDesignAsJson = () => {
     const normalizedItems = items.map((i) => ({
@@ -1970,7 +2017,7 @@ export default function Workspace2D() {
     clearTimeout(autoSaveTimer.current)
     autoSaveTimer.current=setTimeout(async()=>{
       try{
-        await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays,customModels})})
+        await projectsApi.update(id,{roomConfig:JSON.stringify(cfg),furnitureLayout:JSON.stringify({items,overlays,customModels,viewOptions})})
         setDirty(false)
       }catch(e){ console.warn('Auto-save failed',e) }
     },1500)

@@ -71,15 +71,27 @@ export default function AppLayout({ children, title }) {
     navigate('/login')
   }
 
+  const handleGoLanding = () => {
+    try {
+      window.dispatchEvent(new CustomEvent('roomcraft-save-request'))
+    } catch (e) {
+      console.warn('Save event dispatch failed', e)
+    }
+    setTimeout(() => {
+      logout()
+      navigate('/')
+    }, 250)
+  }
+
   const Sidebar = () => (
     <aside className="flex flex-col w-64 h-full bg-white border-r border-surface-200">
       {/* Logo */}
-      <div className="flex items-center gap-2.5 px-5 py-4 border-b border-surface-100">
+      <button onClick={handleGoLanding} className="flex items-center gap-2.5 px-5 py-4 border-b border-surface-100 text-left w-full">
         <div className="w-8 h-8 bg-brand-600 rounded-xl flex items-center justify-center">
           <Boxes className="w-5 h-5 text-white" />
         </div>
         <span className="font-display font-semibold text-surface-900">RoomCraft</span>
-      </div>
+      </button>
 
       {/* Nav */}
       <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
@@ -148,14 +160,14 @@ export default function AppLayout({ children, title }) {
           >
             <Menu className="w-5 h-5" />
           </button>
-          <div className="flex items-center gap-2">
+          <button onClick={handleGoLanding} className="flex items-center gap-2 text-left">
             <div className="w-7 h-7 bg-brand-600 rounded-lg flex items-center justify-center">
               <Boxes className="w-4 h-4 text-white" />
             </div>
             <span className="font-display font-semibold text-sm text-surface-900">
               {title || 'RoomCraft'}
             </span>
-          </div>
+          </button>
         </header>
 
         {/* Page content */}

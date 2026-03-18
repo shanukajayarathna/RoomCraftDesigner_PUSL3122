@@ -7,7 +7,7 @@ import { Boxes, Eye, EyeOff, LogIn } from 'lucide-react'
 export default function LoginPage() {
   const [form, setForm] = useState({ username: '', password: '' })
   const [show, setShow] = useState(false)
-  const { login, logout, isLoading } = useAuthStore()
+  const { login, isLoading } = useAuthStore()
   const navigate = useNavigate()
 
   const handleSubmit = async (e) => {
@@ -26,6 +26,16 @@ export default function LoginPage() {
     else setForm({ username: 'demo', password: 'demo123' })
   }
 
+  const handleLogoLanding = () => {
+    try {
+      window.dispatchEvent(new CustomEvent('roomcraft-save-request'))
+    } catch (e) {
+      console.warn('Save dispatch failed', e)
+    }
+    toast.success('Saved')
+    navigate('/')
+  }
+
   return (
   <div className="min-h-screen flex">
     {/* Left panel — image */}
@@ -36,12 +46,12 @@ export default function LoginPage() {
         className="w-full h-full object-cover"
       />
       <div className="absolute inset-0 bg-gradient-to-br from-indigo-900/80 to-slate-900/60 flex flex-col justify-end p-12">
-        <div className="flex items-center gap-2.5 mb-auto pt-8">
+        <button onClick={handleLogoLanding} className="flex items-center gap-2.5 mb-auto pt-8 text-left">
           <div className="w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center backdrop-blur">
             <Boxes className="text-white" style={{width:'16px',height:'16px'}} />
           </div>
           <span className="text-white font-semibold">RoomCraft</span>
-        </div>
+        </button>
         <blockquote className="text-white/90 text-lg font-medium leading-relaxed mb-4">
           "Design your dream space with professional tools, right in your browser."
         </blockquote>
@@ -53,22 +63,21 @@ export default function LoginPage() {
     <div className="flex-1 flex items-center justify-center p-6 bg-slate-50">
       <div className="w-full max-w-md">
         <div className="text-center mb-8 lg:hidden">
-          <Link to="/" className="inline-flex items-center gap-2">
+          <button onClick={handleLogoLanding} className="inline-flex items-center gap-2">
             <div className="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center">
               <Boxes className="text-white" style={{width:'16px',height:'16px'}} />
             </div>
             <span className="font-semibold text-slate-900">RoomCraft</span>
-          </Link>
-          <button onClick={() => { logout(); navigate('/') }}
-            className="mt-3 text-xs font-medium text-slate-500 hover:text-slate-700 transition">
-            Back to landing (logout)
+          </button>
+          <button onClick={handleLogoLanding} className="mt-3 inline-flex items-center justify-center text-xs font-medium text-slate-500 hover:text-slate-700 transition">
+            Back to landing
           </button>
         </div>
 
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
           <div className="mb-3 text-right">
-            <button onClick={() => { logout(); navigate('/') }} className="text-xs font-semibold text-slate-500 hover:text-slate-700 transition">
-              ← Back to landing (logout)
+            <button onClick={handleLogoLanding} className="text-xs font-semibold text-slate-500 hover:text-slate-700 transition">
+              ← Back to landing
             </button>
           </div>
           <div className="mb-7">
