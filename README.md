@@ -121,6 +121,8 @@ npm run dev
 
 ✅ The app is ready at **`http://localhost:5173`**
 
+> Windows shortcut: run `start.bat` from the project root and it will start both backend and frontend.
+
 ---
 
 ### Step 4 — Log in
@@ -246,15 +248,15 @@ Authorization: Bearer <jwt_token>
 
 ## 🖥️ Screenshots
 
-> Add your screenshots to a `_screenshots/` folder in the project root.
+> The screenshots are in the `screenshots/` folder. Example files are included.
 
-| Screen | File |
-|---|---|
-| Landing page | `_screenshots/landing.png` |
-| User dashboard | `_screenshots/dashboard.png` |
-| 2D floor planner | `_screenshots/workspace2d.png` |
-| 3D visualization | `_screenshots/workspace3d.png` |
-| Admin dashboard | `_screenshots/admin.png` |
+| Screen | File | Preview |
+|---|---|---|
+| Landing page | `screenshots/Landing.png` | ![Landing](screenshots/Landing.png) |
+| User dashboard | `screenshots/dashboard.png` | ![Dashboard](screenshots/dashboard.png) |
+| 2D floor planner | `screenshots/workspace2d.png` | ![Workspace2D](screenshots/workspace2d.png) |
+| 3D visualization | `screenshots/workspace3d.png` | ![Workspace3D](screenshots/workspace3d.png) |
+| Admin dashboard | `screenshots/admin.png` | ![Admin](screenshots/admin.png) |
 
 ---
 
