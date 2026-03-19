@@ -14,8 +14,6 @@
 
 **A web-based interior design tool that lets designers plan rooms in 2D, visualize them in real-time 3D, and furnish them from a curated model library — all in the browser.**
 
-🔗 **Live Demo:** _[Add your deployed URL here]_&nbsp;&nbsp;|&nbsp;&nbsp;🎬 **Video Walkthrough:** _[Add your YouTube URL here]_
-
 ---
 
 [Features](#-features) · [Tech Stack](#-tech-stack) · [Quick Start](#-quick-start) · [Configuration](#️-configuration) · [Project Structure](#-project-structure) · [API Reference](#-api-reference) · [Team](#-team) · [Credits](#-credits)
@@ -271,40 +269,6 @@ This project was developed as a group assignment for **PUSL3122 — HCI, Compute
 | — | — |
 | — | — |
 | — | — |
-
----
-
-## 📜 Credits & Attributions
-
-### 3D Furniture Models
-
-> ⚠️ **Required for submission.** Replace every row below with the actual name, source URL, and license of each `.glb` / `.obj` file used in the project.
-
-| Model | Source | License |
-|---|---|---|
-| _[Model name]_ | _[Source URL]_ | _[License]_ |
-| _[Model name]_ | _[Source URL]_ | _[License]_ |
-| _[Model name]_ | _[Source URL]_ | _[License]_ |
-
-Recommended free model sources:
-- [Poly Pizza](https://poly.pizza) — CC0 / free
-- [Sketchfab](https://sketchfab.com/features/free-3d-models) — various licenses
-- [KhronosGroup glTF Samples](https://github.com/KhronosGroup/glTF-Sample-Models) — CC0
-
----
-
-### Photography
-
-Hero and room card images sourced from [Unsplash](https://unsplash.com) under the [Unsplash License](https://unsplash.com/license) — free for commercial and personal use, no attribution required but credited here for transparency.
-
-| Usage in app | Photographer | Unsplash link |
-|---|---|---|
-| Hero — dark living room | _[Add name]_ | [unsplash.com/photos/...](https://unsplash.com) |
-| Hero 2 — modern interior | _[Add name]_ | [unsplash.com/photos/...](https://unsplash.com) |
-| Living Room card | _[Add name]_ | [unsplash.com/photos/...](https://unsplash.com) |
-| Bedroom card | _[Add name]_ | [unsplash.com/photos/...](https://unsplash.com) |
-| Kitchen card | _[Add name]_ | [unsplash.com/photos/...](https://unsplash.com) |
-| Office card | _[Add name]_ | [unsplash.com/photos/...](https://unsplash.com) |
 
 ---
 
