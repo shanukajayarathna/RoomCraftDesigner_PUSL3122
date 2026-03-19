@@ -258,20 +258,6 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 👥 Team
-
-This project was developed as a group assignment for **PUSL3122 — HCI, Computer Graphics and Visualisation** at the University of Plymouth (2025–26).
-
-| Member | GitHub |
-|---|---|
-| — | — |
-| — | — |
-| — | — |
-| — | — |
-| — | — |
-
----
-
 ### Open Source Libraries
 
 | Library | Version | License |
