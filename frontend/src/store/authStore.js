@@ -38,11 +38,9 @@ function normaliseAuthResponse(data) {
 // ─── Auth store ───────────────────────────────────────────────────────────────
 
 export const useAuthStore = create((set) => ({
-  user: (() => {
-    try { return JSON.parse(localStorage.getItem('rc_user')) } catch { return null }
-  })(),
+  user: null,
   isLoading: false,
-  token: localStorage.getItem('rc_token') || null,
+  token: null,
 
   login: async (username, password) => {
     set({ isLoading: true })

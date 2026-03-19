@@ -1,6 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import { useAuthStore, userApi } from './store/authStore'
 import './index.css'
@@ -73,6 +73,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <ErrorBoundary>
       <BrowserRouter>
+        <AuthInitializer />
         <Routes>
           <Route path="/"         element={<LandingPage />} />
           <Route path="/login"    element={<PublicOnlyRoute><LoginPage /></PublicOnlyRoute>} />
